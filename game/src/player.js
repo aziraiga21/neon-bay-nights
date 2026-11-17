@@ -1,236 +1,276 @@
-import { PALETTE as P, TUNE, CARS, clamp, dist, money } from './config.js';
-import { moveCircle, isSolid } from './world.js';
+// Neon Bay Nights — Jax on foot: walking, sprinting, stealing rides,
+// shops, pickups, and taking a hit.
+//
+// Jax is a plain object on the game: position, heading, health, cash,
+// ammo, and whichever car he is sitting in (null on foot). Everything
+// else in the game reads those fields directly, so this module is the
+// one place that moves them.
+import { PALETTE as P, CARS, TUNE, clamp, dist } from './config.js';
+import { isSolid, moveCircle, lineClear } from './world.js';
 import { nearestCar, canExit } from './vehicles.js';
 import { missionEvent } from './missions.js';
-export function makePlayer(world, save) {
+
+const START_CASH = 350;
+const START_AMMO = 36;
+const START_HEALTH = 100;
+const AMMO_BOX = 48;
+const PICKUP_REACH = 24;
+const SERVICE_REACH = 85;
+const REPAIR_REACH = 100;
+const EXIT_COOLDOWN = 0.6;
+const STAMINA_DRAIN = 0.22;
+const STAMINA_REGEN = 0.16;
+const HEALTH_SNACK = 40;
+const AMMO_LOOSE = 24;
+
+// --- construction --------------------------------------------------------
+
+export function makePlayer(world, save = null) {
+    const spawn = world.spawn;
     return {
-        ...world.spawn, isPlayer: true, role: 'player', skin: '#C48A62', hair: P.ink, jacket: P.jacket, health: 100, cash: save?.cash ?? 350, ammo: save?.ammo ?? 36, car: null, moving: false, invincible: 1, flash: 0, punch: 0, shotCooldown: 0, punchCooldown: 0, carCooldown: 0, stamina: 1, armed: false
+        id: 1, isPlayer: true,
+        x: spawn.x, y: spawn.y, h: spawn.h,
+        health: START_HEALTH,
+        cash: save && Number.isFinite(save.cash) ? save.cash : START_CASH,
+        ammo: save && Number.isFinite(save.ammo) ? save.ammo : START_AMMO,
+        car: null, carCooldown: 0, invincible: 0, stamina: 1,
+        moving: false, armed: false, punch: 0, punchCooldown: 0,
+        shotCooldown: 0, flash: 0, fireHeading: 0,
+        jacket: P.jacket, skin: '#C48A62', hair: P.ink, trousers: P.trousers
     };
 }
+
+// --- per-frame update ----------------------------------------------------
+
 export function updatePlayer(game, dt) {
     const p = game.player;
     p.invincible = Math.max(0, p.invincible - dt);
     p.carCooldown = Math.max(0, p.carCooldown - dt);
     p.flash = Math.max(0, p.flash - dt);
     p.punch = Math.max(0, p.punch - dt);
-    if (!p.car) {
-        const a = game.input.axes(), len = Math.hypot(a.x, a.y);
-        const sprint = game.input.down('ShiftLeft', 'ShiftRight') && p.stamina > .05 && len > 0;
-        p.stamina = clamp(p.stamina + (sprint ? -.23 : .2) * dt, 0, 1);
-        const speed = sprint ? TUNE.sprint : TUNE.walk;
-        p.moving = len > 0;
-        if (len > 0) {
-            const dx = a.x / len, dy = a.y / len;
-            moveCircle(game.world, p, dx * speed * dt, dy * speed * dt, TUNE.playerRadius);
-            if (!game.input.mouse.down && !game.input.down('Space')) {
-                p.h = Math.atan2(dy, dx);
+    p.armed = p.ammo > 0 && game.input.mouse.aim;
+    if (p.car) {
+        driveSeat(game, dt);
+    } else {
+        walkStep(game, dt);
+        collectPickups(game, dt);
+    }
+    if (p.health <= 0 && game.mode === 'play') {
+        p.health = 0;
+        game.end('dead');
+    }
+}
+
+// In a car Jax goes where the car goes. E steps out, R pays the garage
+// for a fix when one is close enough to matter.
+function driveSeat(game, dt) {
+    const p = game.player;
+    const car = p.car;
+    p.x = car.x;
+    p.y = car.y;
+    p.h = car.h;
+    p.moving = Math.abs(car.speed) > 12;
+    if (game.input.tap('KeyE') && p.carCooldown <= 0) stepOut(game);
+    if (game.input.tap('KeyR')) tryGarageFix(game);
+}
+
+function walkStep(game, dt) {
+    const p = game.player;
+    const axis = game.input.axes();
+    const sprinting = game.input.down('ShiftLeft', 'ShiftRight') && p.stamina > 0.02
+        && (axis.x !== 0 || axis.y !== 0);
+    if (sprinting) p.stamina = Math.max(0, p.stamina - STAMINA_DRAIN * dt);
+    else p.stamina = Math.min(1, p.stamina + STAMINA_REGEN * dt);
+    const speed = sprinting ? TUNE.sprint : TUNE.walk;
+    const len = Math.hypot(axis.x, axis.y);
+    p.moving = len > 0;
+    if (len > 0) {
+        const nx = axis.x / len;
+        const ny = axis.y / len;
+        p.h = Math.atan2(ny, nx);
+        moveCircle(game.world, p, nx * speed * dt, ny * speed * dt, TUNE.playerRadius);
+    }
+    if (game.input.tap('KeyE') && p.carCooldown <= 0) interact(game);
+}
+
+// --- getting in and out --------------------------------------------------
+
+// The on-foot interaction: a shop counter beats a car door when both are
+// in reach, otherwise take the nearest usable ride.
+export function interact(game) {
+    const p = game.player;
+    if (p.car) return false;
+    if (useService(game)) return true;
+    const car = nearestCar(game, TUNE.enterDistance);
+    if (!car) return false;
+    return climbIn(game, car);
+}
+
+function climbIn(game, car) {
+    const p = game.player;
+    if (car.wreck) {
+        game.notify('WRECKED', 'That engine is done. Find another ride.', P.carCoral);
+        return false;
+    }
+    if (car.type === 'police' && game.police.stars < 2) {
+        game.notify('NBPD INTERCEPTOR', 'Locked down until the heat is on. Come back at two stars.', P.policeRed);
+        game.audio.play('empty');
+        return false;
+    }
+    if (car.driver) {
+        car.driver = false;
+        const runner = game.addPed(car.x, car.y, true);
+        if (runner) runner.scared = 3;
+    }
+    car.ai = 'parked';
+    car.stolen = true;
+    p.car = car;
+    p.x = car.x;
+    p.y = car.y;
+    p.h = car.h;
+    p.carCooldown = EXIT_COOLDOWN;
+    p.moving = false;
+    game.stats.stolen += 1;
+    game.unlockedCars.add(car.type);
+    game.audio.play('enter');
+    game.crime('theft', 1.4, { x: p.x, y: p.y }, false);
+    missionEvent(game, 'enterCar', { car });
+    return true;
+}
+
+function stepOut(game) {
+    const p = game.player;
+    const car = p.car;
+    if (!car) return false;
+    const spot = canExit(game, car) || huntExitSpot(game, car);
+    if (!spot) {
+        game.notify('NO WAY OUT', 'No clear ground beside this car.', P.carCoral);
+        return false;
+    }
+    p.car = null;
+    p.x = spot.x;
+    p.y = spot.y;
+    p.carCooldown = EXIT_COOLDOWN;
+    p.moving = false;
+    game.audio.play('enter');
+    return true;
+}
+
+// canExit already tries both flanks; this is the last resort, a slow
+// spiral of candidate spots around the car until solid-free ground shows.
+function huntExitSpot(game, car) {
+    for (let radius = 34; radius <= 90; radius += 14) {
+        for (let i = 0; i < 8; i++) {
+            const a = (i / 8) * Math.PI * 2;
+            const spot = { x: car.x + Math.cos(a) * radius, y: car.y + Math.sin(a) * radius };
+            if (!isSolid(game.world, spot.x, spot.y, 8) && lineClear(game.world, car, spot)
+                && !game.cars.some(v => v !== car && dist(v, spot) < 22)) {
+                return spot;
             }
         }
-        if (game.input.mouse.aim && (game.input.mouse.down || p.armed)) {
-            const aim = game.screenToWorld(game.input.mouse.x, game.input.mouse.y);
-            p.h = Math.atan2(aim.y - p.y, aim.x - p.x);
+    }
+    return null;
+}
+
+// --- shops and the garage ------------------------------------------------
+
+function tryGarageFix(game) {
+    const p = game.player;
+    if (!p.car) return false;
+    const shop = nearestService(game, REPAIR_REACH);
+    if (!shop || shop.kind !== 'garage') return false;
+    return useService(game, shop);
+}
+
+// Pay at the nearest counter: a meal or a clinic visit patches Jax up,
+// a box of shells tops the pistol off, the garage rebuilds the car.
+// Nothing happens when the till is short or nothing needs fixing.
+export function useService(game, service = null) {
+    const p = game.player;
+    const shop = service || nearestService(game, SERVICE_REACH);
+    if (!shop) return false;
+    if (p.cash < shop.price) {
+        game.notify('SHORT ON CASH', `${shop.name} asks ${shop.price}.`, P.carCoral);
+        return false;
+    }
+    if (shop.kind === 'garage') {
+        if (!p.car || p.car.hp >= CARS[p.car.type].hp) return false;
+        p.car.hp = CARS[p.car.type].hp;
+        p.cash -= shop.price;
+        game.notify('ENGINE REBUILT', `${shop.name} · -$${shop.price}`, P.mango);
+    } else if (shop.kind === 'food' || shop.kind === 'clinic') {
+        if (p.health >= START_HEALTH) return false;
+        p.health = START_HEALTH;
+        p.cash -= shop.price;
+        game.notify(shop.kind === 'food' ? 'FED AND WATERED' : 'PATCHED UP', `${shop.name} · -$${shop.price}`, P.mango);
+    } else if (shop.kind === 'ammo') {
+        if (p.ammo >= TUNE.maxAmmo) return false;
+        p.ammo = Math.min(TUNE.maxAmmo, p.ammo + AMMO_BOX);
+        p.cash -= shop.price;
+        game.notify('AMMO RESTOCKED', `${shop.name} · -$${shop.price}`, P.mango);
+    } else {
+        return false;
+    }
+    game.audio.play('pickup');
+    game.floatText(p.x, p.y - 16, `-$${shop.price}`, P.carCoral);
+    return true;
+}
+
+function nearestService(game, reach) {
+    let best = null;
+    let d = reach;
+    for (const s of game.world.services || []) {
+        const n = dist(s, game.player);
+        if (n < d) {
+            best = s;
+            d = n;
         }
-        // Cars are physical threats on foot, with a grace period after leaving a vehicle.
-        for (const c of game.cars) {
-            if (dist(c, p) < 21 && Math.abs(c.speed) > 48 && p.invincible === 0) {
-                hurtPlayer(game, clamp(Math.abs(c.speed) * .16, 9, 44));
-                const a = Math.atan2(p.y - c.y, p.x - c.x);
-                moveCircle(game.world, p, Math.cos(a) * 24, Math.sin(a) * 24, 7);
-                c.speed *= .72;
-                game.burst(p.x, p.y, 'dust', 5);
-                game.audio.play('crash', .4);
-            }
-        }
     }
-    else {
-        p.moving = false;
-        p.h = p.car.h;
-        p.x = p.car.x;
-        p.y = p.car.y;
-    }
-    if (game.input.tap('KeyE') && p.carCooldown === 0) {
-        interact(game);
-    }
-    if (game.input.tap('KeyR') && p.car) {
-        const garage = game.world.services.find(s => s.kind === 'garage' && dist(s, p) < 80);
-        if (garage) {
-            useService(game, garage);
-        }
-    }
+    return best;
+}
+
+// --- pickups -------------------------------------------------------------
+
+function collectPickups(game, dt) {
+    const p = game.player;
     for (const item of game.world.pickups) {
         if (!item.active) {
-            item.respawn -= dt;
-            if (item.respawn <= 0) {
-                item.active = true;
+            if (!item.drop && item.respawn > 0) {
+                item.respawn -= dt;
+                if (item.respawn <= 0) item.active = true;
             }
             continue;
         }
-        if (dist(item, p) < (p.car ? 25 : 19)) {
-            if (item.kind === 'health' && p.health >= 100) {
-                continue;
-            }
-            if (item.kind === 'ammo' && p.ammo >= TUNE.maxAmmo) {
-                continue;
-            }
-            if (item.kind === 'health') {
-                p.health = Math.min(100, p.health + 30);
-            }
-            if (item.kind === 'ammo') {
-                p.ammo = Math.min(TUNE.maxAmmo, p.ammo + 18);
-            }
-            if (item.kind === 'cash') {
-                p.cash += item.amount || 75;
-                game.stats.earned += item.amount || 75;
-            }
-            item.active = false;
-            item.respawn = item.drop ? 99999 : 65;
-            game.audio.play('pickup');
-            game.floatText(item.x, item.y, item.kind === 'health' ? '+30 HEALTH' : item.kind === 'ammo' ? '+18 AMMO' : `+${money(item.amount || 75)}`, P.mango);
-            missionEvent(game, 'pickup', { item });
+        if (dist(item, p) > PICKUP_REACH) continue;
+        if (item.kind === 'cash') {
+            const amount = item.amount || 40;
+            p.cash += amount;
+            game.floatText(item.x, item.y - 14, `+$${amount}`, P.mango);
+        } else if (item.kind === 'health') {
+            if (p.health >= START_HEALTH) continue;
+            p.health = Math.min(START_HEALTH, p.health + HEALTH_SNACK);
+            game.floatText(item.x, item.y - 14, '+HEALTH', P.carCoral);
+        } else if (item.kind === 'ammo') {
+            if (p.ammo >= TUNE.maxAmmo) continue;
+            p.ammo = Math.min(TUNE.maxAmmo, p.ammo + AMMO_LOOSE);
+            game.floatText(item.x, item.y - 14, '+AMMO', P.mango);
+        } else {
+            continue;
         }
-    }
-    if (p.health <= 0) {
-        game.end('wasted');
-    }
-}
-export function interact(game) {
-    const p = game.player;
-    if (p.car) {
-        const c = p.car;
-        if (Math.abs(c.speed) > 110) {
-            game.notify('SLOW DOWN', 'Get below 35 mph to step out.');
-            return;
-        }
-        const exit = canExit(game, c);
-        if (!exit || isSolid(game.world, exit.x, exit.y, 8)) {
-            game.notify('DOOR BLOCKED', 'Move somewhere with room to get out.');
-            return;
-        }
-        c.ai = 'parked';
-        c.driver = false;
-        c.throttle = 0;
-        c.steer = 0;
-        c.braking = true;
-        p.car = null;
-        p.x = exit.x;
-        p.y = exit.y;
-        p.invincible = 1.5;
-        p.carCooldown = .55;
-        game.audio.play('enter');
-        missionEvent(game, 'exitCar', { car: c });
-        return;
-    }
-    const s = game.world.services.find(s => dist(s, p) < 43);
-    if (s) {
-        useService(game, s);
-        return;
-    }
-    const c = nearestCar(game, TUNE.enterDistance);
-    if (!c) {
-        game.notify('NEON BAY IS YOURS', 'Approach a car or a marked shop and press E.');
-        return;
-    }
-    if (Math.abs(c.speed) > 135) {
-        game.notify('TOO FAST TO GRAB', 'Catch a car at a red light.');
-        return;
-    }
-    const occupied = c.driver || c.ai === 'police';
-    if (c.type === 'police' && game.police.stars < 2 && occupied) {
-        game.notify('CRUISER LOCKED', 'An active interceptor needs a two-star distraction.', P.policeRed);
-        return;
-    }
-    if (occupied) {
-        game.addPed(c.x - Math.sin(c.h) * 30, c.y + Math.cos(c.h) * 30, true);
-    }
-    c.driver = false;
-    c.ambient = false;
-    c.ai = 'parked';
-    c.route = null;
-    c.steer = 0;
-    c.throttle = 0;
-    c.handbrake = false;
-    c.stolen = true;
-    p.car = c;
-    p.x = c.x;
-    p.y = c.y;
-    p.h = c.h;
-    p.carCooldown = .6;
-    p.armed = false;
-    game.police.units = game.police.units.filter(u => u.car !== c);
-    game.unlockedCars.add(c.type);
-    game.stats.stolen++;
-    game.stats.reputation += 25;
-    game.audio.play('enter');
-    game.crime('theft', c.type === 'police' ? 3.4 : 1.4, c, false);
-    if (c.type === 'police' && game.police.stars >= 2) {
-        game.crime('police theft', 3, c, true);
-    }
-    game.notify(occupied ? 'NEW RIDE. UNHAPPY OWNER.' : CARS[c.type].name.toUpperCase(), occupied ? 'Keep moving. Someone may have seen that.' : 'W / S accelerate & brake · A / D steer · E exit', P.mango);
-    missionEvent(game, 'enterCar', { car: c, stolen: true });
-}
-export function useService(game, s) {
-    const p = game.player;
-    if (game.police.stars > 0) {
-        game.notify('TOO MUCH HEAT', 'Lose the police before using a shop.', P.policeRed);
-        return;
-    }
-    if (s.kind === 'garage') {
-        if (!p.car) {
-            game.notify(s.short, 'Bring a car here for a repair and fresh paint. $100.');
-            return;
-        }
-        if (p.car.wreck) {
-            game.notify('TOW REQUIRED', 'This engine is gone. Find another ride.');
-            return;
-        }
-        if (p.cash < s.price) {
-            game.notify('NEED ' + money(s.price), 'Cruise the city or clear a Copper Kings corner.');
-            return;
-        }
-        p.cash -= s.price;
-        p.car.hp = CARS[p.car.type].hp;
-        p.car.color = game.rng.pick([P.carCoral, P.teal, P.magenta, P.carMint, P.mango]);
-        game.audio.play('complete');
-        game.notify('FRESH PAINT. FRESH START.', 'Vehicle repaired. You look good out there.', P.teal);
-    }
-    else if (s.kind === 'ammo') {
-        if (p.ammo >= TUNE.maxAmmo) {
-            game.notify('FULLY STOCKED', 'Your ammo bag is full.');
-            return;
-        }
-        if (p.cash < s.price) {
-            game.notify('NEED ' + money(s.price), 'An ammo refill costs $45.');
-            return;
-        }
-        p.cash -= s.price;
-        p.ammo = Math.min(TUNE.maxAmmo, p.ammo + 48);
+        item.active = false;
+        item.respawn = item.drop ? 99999 : 25;
         game.audio.play('pickup');
-        game.notify('RESTOCKED', '+48 pistol rounds.');
     }
-    else {
-        if (p.health >= 100) {
-            game.notify(s.short, s.kind === 'food' ? 'Rosa says: “Stay sharp, Jax. The bay has eyes.”' : 'You’re already in good shape.');
-            return;
-        }
-        if (p.cash < s.price) {
-            game.notify('NEED ' + money(s.price), 'Pick up a first-aid kit for free recovery.');
-            return;
-        }
-        p.cash -= s.price;
-        p.health = 100;
-        game.audio.play('pickup');
-        game.notify('BACK ON YOUR FEET', s.kind === 'food' ? 'A hot meal and some advice from Rosa.' : 'Patched up. Try to keep it that way.');
-    }
-    game.save();
-    missionEvent(game, 'service', { service: s });
 }
+
+// --- taking damage -------------------------------------------------------
+
 export function hurtPlayer(game, amount) {
     const p = game.player;
-    if (p.invincible > 0 || p.health <= 0) {
-        return;
-    }
+    if (game.mode !== 'play' || p.invincible > 0 || amount <= 0) return;
     p.health = Math.max(0, p.health - amount);
-    p.invincible = .4;
-    game.damageFlash = .28;
-    game.shake = Math.max(game.shake, 3);
+    p.invincible = 0.45;
+    game.damageFlash = Math.min(1, game.damageFlash + 0.55);
+    game.shake = Math.min(9, game.shake + 3);
+    if (p.health <= 0) game.end('dead');
 }

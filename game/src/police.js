@@ -1,259 +1,323 @@
+// Neon Bay Nights — Neon Bay PD: wanted heat, cruiser pursuit,
+// foot officers, the bust meter, and losing the tail.
+//
+// Heat is the real number; stars are just the face it wears. Heat rises
+// when a crime is seen and bleeds away only after the cops have lost
+// sight of Jax for a while. Cruisers unlock at two stars, officers do
+// the arresting on foot, and a fresh car the department has never seen
+// buys Jax his clean getaway.
 import { PALETTE as P, TUNE, clamp, angleDelta, dist } from './config.js';
-import { nearestNode, route, lineClear, moveCircle } from './world.js';
+import { nearestNode, route, lineClear, moveCircle, isSolid } from './world.js';
 import { makeCar } from './vehicles.js';
-import { missionEvent } from './missions.js';
+
+const SIGHT_CAR = 520;
+const SIGHT_FOOT = 300;
+const WITNESS_CAR = 320;
+const WITNESS_FOOT = 260;
+const MAX_UNITS = 3;
+const OFFICER_SPEED = 104;
+const BUST_RATE = 0.55;
+const BUST_COOL = 0.25;
+const HEAT_CREEP = 0.1;
+const HEAT_BLEED = 0.5;
+const SPAWN_FAR = 500;
+const SPAWN_NEAR = 900;
+const CHASE_DIRECT = 460;
+const STOP_NEAR_FOOT = 120;
+const DEPLOY_NEAR = 170;
+const BUST_REACH = 24;
+const MAX_HEAT = TUNE.heatThresholds[5] + 0.6;
+
+// --- construction --------------------------------------------------------
+
 export function makePolice() {
     return {
-        heat: 0, stars: 0, units: [], officers: [], lastSeen: null, seen: false, hiddenFor: 0, bust: 0, spawnTimer: 3, crimeCooldown: {}, knownCar: null, peak: 0, searching: false
+        stars: 0, heat: 0, seen: false, knownCar: -1,
+        units: [], officers: [], spawnTimer: 0, bust: 0,
+        unseen: 0, lastStars: 0
     };
 }
-function witnesses(game, point) {
-    const cars = game.cars.filter(c => c.type === 'police' && !c.wreck && c !== game.player.car);
-    for (const c of cars) {
-        const d = dist(c, point);
-        if (d < 450 && lineClear(game.world, c, point)) {
-            return true;
-        }
-    }
-    return game.police.officers.some(o => !o.dead && dist(o, point) < 330 && lineClear(game.world, o, point));
-}
-export function reportCrime(game, type, amount, point, reported) {
-    const pol = game.police, now = game.time;
-    if ((pol.crimeCooldown[type] || 0) > now) {
-        return;
-    }
-    if (!reported && !witnesses(game, point)) {
-        return;
-    }
-    pol.crimeCooldown[type] = now + (type === 'gunfire' ? 1.4 : type === 'hit and run' ? 1 : 2);
-    pol.heat = clamp(pol.heat + amount, 0, 22);
-    pol.hiddenFor = 0;
-    pol.lastSeen = { x: point.x, y: point.y };
-    pol.knownCar = game.player.car?.id ?? null;
-    const old = pol.stars;
-    pol.stars = heatStars(pol.heat);
-    if (pol.stars > old) {
-        game.audio.play('wanted');
-        game.notify('NEON BAY PD · DISPATCH', `${pol.stars}-star alert. Break their line of sight.`, P.policeRed);
-        pol.spawnTimer = Math.min(.6, pol.spawnTimer);
-    }
-    pol.peak = Math.max(pol.peak, pol.stars);
-    missionEvent(game, 'crime', { crime: type, stars: pol.stars });
-}
-function heatStars(heat) {
+
+function starsFor(heat) {
     let stars = 0;
-    for (let i = 1; i < TUNE.heatThresholds.length; i++) {
-        if (heat >= TUNE.heatThresholds[i]) {
-            stars = i;
+    for (let i = 0; i < TUNE.heatThresholds.length; i++) {
+        if (heat >= TUNE.heatThresholds[i]) stars = i;
+    }
+    return Math.min(5, stars);
+}
+
+// --- raising the heat ----------------------------------------------------
+
+export function setWanted(game, stars) {
+    const pol = game.police;
+    const n = clamp(Math.round(stars) || 0, 0, 5);
+    pol.heat = n === 0 ? 0 : TUNE.heatThresholds[n] + 0.05;
+    pol.stars = n;
+    pol.lastStars = n;
+    pol.unseen = 0;
+    pol.knownCar = game.player.car ? game.player.car.id : -1;
+    if (n > 0) pol.spawnTimer = Math.min(pol.spawnTimer, 0.8);
+}
+
+// A crime only counts when the department can pin it on Jax: reported
+// crimes always count, the rest need a cruiser or an officer with a
+// clear line of sight to the scene.
+export function reportCrime(game, type, amount, point, reported = false) {
+    const pol = game.police;
+    if (!pol || game.mode !== 'play') return;
+    if (!reported && !witnessSeen(game, point || game.player)) return;
+    pol.heat = Math.min(MAX_HEAT, pol.heat + amount);
+    if (game.player.car) pol.knownCar = game.player.car.id;
+    pol.seen = true;
+    pol.unseen = 0;
+    pol.spawnTimer = Math.min(pol.spawnTimer, 0.6);
+    const next = starsFor(pol.heat);
+    if (next > pol.stars) {
+        pol.stars = next;
+        pol.lastStars = next;
+        game.audio.play('wanted');
+        game.notify(`WANTED LEVEL ${next}`, crimeLine(type), P.policeRed);
+    }
+}
+
+function crimeLine(type) {
+    if (type === 'theft') return 'A cruiser saw the boost. Lose them.';
+    if (type === 'gunfire') return 'Shots reported. NBPD is rolling.';
+    if (type === 'officer down') return 'An officer is down. Every unit is coming.';
+    if (type === 'ramming') return 'You rammed a cruiser. That was noticed.';
+    return 'NBPD has your description.';
+}
+
+function witnessSeen(game, point) {
+    for (const car of game.cars) {
+        if (car.type !== 'police' || car === game.player.car || car.wreck) continue;
+        if (dist(car, point) < WITNESS_CAR && lineClear(game.world, car, point)) return true;
+    }
+    for (const officer of game.police.officers) {
+        if (officer.dead) continue;
+        if (dist(officer, point) < WITNESS_FOOT && lineClear(game.world, officer, point)) return true;
+    }
+    return false;
+}
+
+// --- per-frame update ----------------------------------------------------
+
+export function updatePolice(game, dt) {
+    const pol = game.police;
+    if (!pol || game.mode !== 'play') return;
+    pol.seen = canSpotJax(game);
+    trackHeat(game, dt);
+    if (game.mode !== 'play') return;
+    runDispatch(game, dt);
+    steerUnits(game, dt);
+    if (game.mode !== 'play') return;
+    marchOfficers(game, dt);
+}
+
+// Can any cop actually see Jax right now? On foot he is always
+// recognisable; behind the wheel only when the department knows the
+// car he is driving.
+function canSpotJax(game) {
+    const pol = game.police;
+    const p = game.player;
+    const recognised = !p.car || pol.knownCar === p.car.id;
+    if (!recognised) return false;
+    for (const car of game.cars) {
+        if (car.type !== 'police' || car === p.car || car.wreck) continue;
+        if (dist(car, p) < SIGHT_CAR && lineClear(game.world, car, p)) return true;
+    }
+    for (const officer of pol.officers) {
+        if (officer.dead) continue;
+        if (dist(officer, p) < SIGHT_FOOT && lineClear(game.world, officer, p)) return true;
+    }
+    return false;
+}
+
+function trackHeat(game, dt) {
+    const pol = game.police;
+    if (pol.stars > 0 && pol.seen) {
+        pol.unseen = 0;
+        pol.heat = Math.min(MAX_HEAT, pol.heat + HEAT_CREEP * dt);
+    } else {
+        pol.unseen += dt;
+        if (pol.unseen > TUNE.loseSight && pol.heat > 0) {
+            pol.heat = Math.max(0, pol.heat - HEAT_BLEED * dt);
         }
     }
-    return stars;
+    const next = starsFor(pol.heat);
+    if (next < pol.stars) pol.stars = next;
+    if (pol.stars === 0 && pol.lastStars > 0) {
+        game.stats.escapes += 1;
+        game.audio.play('escape');
+        game.notify('YOU LOST THEM', 'The stars went dark. Breathe, Jax.', P.mango);
+    }
+    pol.lastStars = pol.stars;
 }
-function spawnUnit(game) {
-    const p = game.player, rng = game.rng;
-    const candidates = game.world.nodes.filter(n => dist(n, p) > 620 && dist(n, p) < 1150);
-    if (!candidates.length) {
+
+// --- dispatch ------------------------------------------------------------
+
+function runDispatch(game, dt) {
+    const pol = game.police;
+    if (pol.stars <= 0) return;
+    pol.spawnTimer -= dt;
+    if (pol.spawnTimer > 0) return;
+    if (pol.stars >= 2 && pol.units.length < Math.min(pol.stars, MAX_UNITS)) {
+        sendCruiser(game);
+        pol.spawnTimer = 4;
+    } else if (pol.stars === 1 && !game.player.car
+        && pol.officers.filter(o => !o.dead).length < 2) {
+        sendOfficer(game);
+        pol.spawnTimer = 6;
+    } else {
+        pol.spawnTimer = 3;
+    }
+}
+
+function sendCruiser(game) {
+    const p = game.player;
+    let spot = null;
+    let best = Infinity;
+    for (const node of game.world.nodes) {
+        const d = dist(node, p);
+        if (d >= SPAWN_FAR && d <= SPAWN_NEAR && d < best) {
+            spot = node;
+            best = d;
+        }
+    }
+    if (!spot) {
+        for (const node of game.world.nodes) {
+            const d = dist(node, p);
+            if (d > 400 && d < best) {
+                spot = node;
+                best = d;
+            }
+        }
+    }
+    if (!spot) return;
+    const heading = Math.atan2(p.y - spot.y, p.x - spot.x);
+    const car = makeCar('police', spot.x, spot.y, heading, P.pearl, 'police');
+    car.driver = true;
+    game.cars.push(car);
+    game.police.units.push({ car, path: [], repath: 0, deployed: false, retire: 0, officer: null });
+}
+
+function sendOfficer(game) {
+    const p = game.player;
+    for (let i = 0; i < 8; i++) {
+        const a = game.rng.range(0, Math.PI * 2);
+        const spot = { x: p.x + Math.cos(a) * 240, y: p.y + Math.sin(a) * 240 };
+        if (isSolid(game.world, spot.x, spot.y, 8)) continue;
+        game.police.officers.push({
+            id: 3000 + game.police.officers.length,
+            x: spot.x, y: spot.y, h: Math.atan2(p.y - spot.y, p.x - spot.x),
+            hp: 90, dead: false, role: 'officer', jacket: P.navy,
+            skin: '#C48A62', hair: P.ink, cooldown: 0, moving: true, flash: 0, punch: 0
+        });
         return;
     }
-    const inRoad = candidates.filter(n => Math.abs(n.x - p.x) < 80 || Math.abs(n.y - p.y) < 80);
-    const n = rng.pick(inRoad.length ? inRoad : candidates);
-    const h = Math.atan2(p.y - n.y, p.x - n.x);
-    const c = makeCar('police', n.x, n.y + 21, h, P.pearl, 'police');
-    c.driver = true;
-    c.speed = 90;
-    const unit = {
-        car: c, path: [], repath: 0, deployed: false, retire: 0
+}
+
+// --- cruiser pursuit -----------------------------------------------------
+
+function steerUnits(game, dt) {
+    const pol = game.police;
+    const p = game.player;
+    for (let i = pol.units.length - 1; i >= 0; i--) {
+        const unit = pol.units[i];
+        const car = unit.car;
+        if (car === p.car || car.wreck) {
+            pol.units.splice(i, 1);
+            continue;
+        }
+        if (pol.stars === 0) {
+            unit.retire += dt;
+            if ((unit.retire > 2.5 && dist(car, p) > 350) || unit.retire > 7) {
+                game.cars = game.cars.filter(c => c !== car);
+                pol.units.splice(i, 1);
+            }
+            continue;
+        }
+        unit.retire = 0;
+        if (unit.officer && unit.officer.dead) {
+            unit.officer = null;
+            unit.deployed = false;
+        }
+        const d = dist(car, p);
+        if (!p.car && d < STOP_NEAR_FOOT) {
+            car.throttle = 0;
+            car.braking = true;
+            car.steer = 0;
+            if (!unit.deployed) dropOfficer(game, unit);
+            continue;
+        }
+        unit.repath -= dt;
+        if (unit.repath <= 0 || unit.path.length === 0) {
+            unit.path = route(game.world, nearestNode(game.world, car.x, car.y).id,
+                nearestNode(game.world, p.x, p.y).id).map(n => ({ x: n.x, y: n.y }));
+            unit.repath = 0.9;
+        }
+        // Drop junctions the cruiser has already rolled past, so it never
+        // turns back toward a junction behind it on a straight chase.
+        while (unit.path.length > 1) {
+            const a = unit.path[0], b = unit.path[1];
+            const abx = b.x - a.x, aby = b.y - a.y;
+            const along = ((car.x - a.x) * abx + (car.y - a.y) * aby) / (abx * abx + aby * aby || 1);
+            if (along > 0.15 || dist(car, a) < 42) unit.path.shift();
+            else break;
+        }
+        const direct = d < CHASE_DIRECT && lineClear(game.world, car, p);
+        const target = direct || unit.path.length === 0 ? p : unit.path[0];
+        const delta = angleDelta(car.h, Math.atan2(target.y - car.y, target.x - car.x));
+        car.steer = clamp(delta * 2.6, -1, 1);
+        car.throttle = Math.abs(delta) < 1.4 ? 1 : 0.45;
+        car.braking = Math.abs(delta) > 2.4 && Math.abs(car.speed) > 60;
+    }
+}
+
+function dropOfficer(game, unit) {
+    const car = unit.car;
+    const officer = {
+        id: 3000 + game.police.officers.length,
+        x: car.x + 16, y: car.y + 10, h: Math.atan2(game.player.y - car.y, game.player.x - car.x),
+        hp: 90, dead: false, role: 'officer', jacket: P.navy,
+        skin: '#C48A62', hair: P.ink, cooldown: 0, moving: true, flash: 0, punch: 0
     };
-    game.cars.push(c);
-    game.police.units.push(unit);
+    game.police.officers.push(officer);
+    unit.officer = officer;
+    unit.deployed = true;
 }
-export function updatePolice(game, dt) {
-    const pol = game.police, p = game.player;
-    if (pol.stars === 0 && pol.heat > 0) {
-        pol.heat = Math.max(0, pol.heat - dt * .12);
-    }
-    let visible = false;
-    const officers = pol.officers.filter(o => !o.dead);
-    for (const c of game.cars) {
-        if (c.type !== 'police' || c === p.car || c.wreck || (!c.driver && c.ai === 'parked')) {
-            continue;
-        }
-        let range = c.ai === 'police' ? 490 : 360;
-        if (pol.stars > 0 && p.car && p.car.id !== pol.knownCar) {
-            range = 145;
-        }
-        if (dist(c, p) < range && lineClear(game.world, c, p)) {
-            visible = true;
-        }
-        if (p.car && Math.abs(p.car.speed) > 300 && dist(c, p) < 240 && lineClear(game.world, c, p)) {
-            reportCrime(game, 'reckless driving', 1.1, p, true);
-        }
-    }
-    for (const o of officers) {
-        if (dist(o, p) < 330 && lineClear(game.world, o, p)) {
-            visible = true;
-        }
-    }
-    pol.seen = pol.stars > 0 && visible;
-    if (pol.stars > 0) {
-        if (visible) {
-            pol.lastSeen = { x: p.x, y: p.y };
-            pol.hiddenFor = 0;
-            pol.knownCar = p.car?.id ?? null;
-        }
-        else {
-            pol.hiddenFor += dt;
-            if (pol.hiddenFor > TUNE.loseSight) {
-                pol.heat = Math.max(0, pol.heat - dt * (.6 + pol.hiddenFor * .025));
-                const next = heatStars(pol.heat);
-                if (next < pol.stars) {
-                    pol.stars = next;
-                    if (next === 0) {
-                        pol.heat = 0;
-                        game.audio.play('escape');
-                        game.notify('YOU LOST THEM', `+${pol.peak * 120} reputation · Keep a low profile.`, P.teal);
-                        game.stats.reputation += pol.peak * 120;
-                        game.stats.escapes++;
-                        missionEvent(game, 'wantedCleared', { peak: pol.peak });
-                        pol.peak = 0;
-                        game.save();
-                    }
-                }
-            }
-        }
-        pol.searching = !visible;
-        pol.spawnTimer -= dt;
-        const max = Math.min(6, pol.stars + 1);
-        if (pol.spawnTimer <= 0 && pol.units.filter(u => !u.car.wreck).length < max) {
-            spawnUnit(game);
-            pol.spawnTimer = Math.max(2.8, 7 - pol.stars);
-        }
-    }
-    else {
-        pol.searching = false;
-        pol.hiddenFor = 0;
-    }
-    for (const u of pol.units) {
-        const c = u.car;
-        if (c === p.car) {
-            continue;
-        }
-        if (c.wreck) {
-            continue;
-        }
+
+// --- officers on foot ----------------------------------------------------
+
+function marchOfficers(game, dt) {
+    const pol = game.police;
+    const p = game.player;
+    let closing = false;
+    for (let i = pol.officers.length - 1; i >= 0; i--) {
+        const officer = pol.officers[i];
+        if (officer.dead) continue;
         if (pol.stars === 0) {
-            if (c.ai !== 'patrol') {
-                c.ai = 'patrol';
-                c.cruise = 94;
-                c.route = null;
-            }
-            u.retire += dt;
+            officer.leaving = (officer.leaving || 0) + dt;
+            const away = Math.atan2(officer.y - p.y, officer.x - p.x);
+            officer.h = away;
+            moveCircle(game.world, officer, Math.cos(away) * 80 * dt, Math.sin(away) * 80 * dt, 7);
+            if (officer.leaving > 5 || dist(officer, p) > 800) pol.officers.splice(i, 1);
             continue;
         }
-        c.ai = 'police';
-        const goal = pol.lastSeen || p;
-        const d = dist(c, p);
-        let target = goal;
-        const clear = lineClear(game.world, c, goal);
-        if (!clear) {
-            u.repath -= dt;
-            if (u.repath <= 0 || !u.path.length) {
-                const start = nearestNode(game.world, c.x, c.y), end = nearestNode(game.world, goal.x, goal.y);
-                u.path = route(game.world, start.id, end.id);
-                if (dist(c, start) < 85) {
-                    u.path.shift();
-                }
-                u.repath = 1.5;
-            }
-            if (u.path.length) {
-                target = u.path[0];
-                if (dist(c, target) < 48) {
-                    u.path.shift();
-                    target = u.path[0] || goal;
-                }
-            }
-        }
-        else {
-            u.path = [];
-        }
-        const lead = visible && p.car ? Math.min(.45, d / 800) : 0;
-        const tx = target.x + (target === goal ? (p.car?.vx || 0) * lead : 0), ty = target.y + (target === goal ? (p.car?.vy || 0) * lead : 0);
-        const wantedAngle = Math.atan2(ty - c.y, tx - c.x), delta = angleDelta(c.h, wantedAngle);
-        c.steer = clamp(delta * 2.6, -1, 1);
-        const desired = d < 90 && !p.car ? 15 : Math.abs(delta) > 1 ? 85 : Math.abs(delta) > .5 ? 150 : 245 + pol.stars * 17;
-        c.throttle = c.speed < desired ? 1 : 0;
-        c.braking = c.speed > desired + 15;
-        c.handbrake = false;
-        // Back out physically when a ram or a tight corner leaves the cruiser stuck.
-        u.stuck = Math.abs(c.speed) < 10 && c.throttle > 0 ? (u.stuck || 0) + dt : 0;
-        if (u.stuck > 1.4) {
-            u.reverse = .8;
-            u.stuck = 0;
-            u.repath = 0;
-        }
-        u.reverse = Math.max(0, (u.reverse || 0) - dt);
-        if (u.reverse > 0) {
-            c.throttle = -1;
-            c.braking = false;
-            c.steer = -Math.sign(delta || 1);
-        }
-        if (!p.car && d < 150 && clear && !u.deployed && pol.officers.filter(o => !o.dead).length < 6) {
-            u.deployed = true;
-            const x = c.x - Math.sin(c.h) * 30, y = c.y + Math.cos(c.h) * 30;
-            if (!game.world.buildings.some(b => x > b.x && x < b.x + b.w && y > b.y && y < b.y + b.h)) {
-                pol.officers.push({
-                    id: 800 + c.id, x, y, h: c.h, hp: 90, role: 'officer', skin: '#C48A62', hair: P.ink, jacket: P.navy, dead: false, armed: true, cooldown: 1.4, moving: true, flash: 0
-                });
+        const angle = Math.atan2(p.y - officer.y, p.x - officer.x);
+        officer.h = angle;
+        officer.moving = true;
+        moveCircle(game.world, officer, Math.cos(angle) * OFFICER_SPEED * dt,
+            Math.sin(angle) * OFFICER_SPEED * dt, 7);
+        const d = dist(officer, p);
+        if (!p.car && d < BUST_REACH) {
+            closing = true;
+            pol.bust = Math.min(1, pol.bust + BUST_RATE * dt);
+            if (pol.bust >= 1) {
+                game.end('busted');
+                return;
             }
         }
     }
-    for (const o of officers) {
-        if (pol.stars === 0) {
-            o.moving = false;
-            continue;
-        }
-        const target = pol.lastSeen || p, dx = target.x - o.x, dy = target.y - o.y, d = Math.hypot(dx, dy);
-        o.h = Math.atan2(dy, dx);
-        o.moving = d > 19;
-        if (d > 19) {
-            moveCircle(game.world, o, dx / d * (pol.stars >= 3 ? 100 : 92) * dt, dy / d * (pol.stars >= 3 ? 100 : 92) * dt, 7);
-        }
-    }
-    let busting = false;
-    if (pol.stars > 0 && !p.car) {
-        for (const o of officers) {
-            if (dist(o, p) < 33 && lineClear(game.world, o, p)) {
-                busting = true;
-            }
-        }
-    }
-    if (pol.stars > 0 && p.car && Math.abs(p.car.speed) < 18) {
-        for (const c of game.cars) {
-            if (c.type === 'police' && c !== p.car && !c.wreck && dist(c, p) < 55) {
-                busting = true;
-            }
-        }
-    }
-    pol.bust = clamp(pol.bust + (busting ? .43 : -.5) * dt, 0, 1);
-    if (pol.bust >= 1) {
-        game.end('busted');
-    }
-    // Retire distant completed patrols so long sessions stay bounded.
-    const retired = pol.units.filter(u => (u.retire > 18 || u.car.wreck) && dist(u.car, p) > 1100);
-    if (retired.length) {
-        const ids = new Set(retired.map(u => u.car.id));
-        pol.units = pol.units.filter(u => !ids.has(u.car.id));
-        game.cars = game.cars.filter(c => !ids.has(c.id));
-    }
-    if (pol.officers.length > 12) {
-        pol.officers = pol.officers.filter(o => !o.dead && dist(o, p) < 1100);
-    }
-}
-export function setWanted(game, stars) {
-    game.police.heat = TUNE.heatThresholds[clamp(stars, 0, 5)] + .2;
-    game.police.stars = stars;
-    game.police.peak = stars;
-    game.police.lastSeen = { x: game.player.x, y: game.player.y };
-    game.police.knownCar = game.player.car?.id ?? null;
-    game.police.spawnTimer = .1;
+    if (!closing) pol.bust = Math.max(0, pol.bust - BUST_COOL * dt);
 }
