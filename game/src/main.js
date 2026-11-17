@@ -79,10 +79,9 @@ export function createGame(seed, save = null) {
             if (this === game) paintMenu('over');
         },
         screenToWorld(x, y) {
-            return {
-                x: this.camera.x + (x - renderer.width / 2) / this.camera.zoom,
-                y: this.camera.y + (y - renderer.height / 2) / this.camera.zoom
-            };
+            // The 3D renderer unprojects the screen point onto the ground
+            // plane, so mouse aim lands where the player is pointing.
+            return renderer.screenToWorld(x, y);
         },
         floatText(x, y, str, color = P.mango) {
             this.floats.push({ x, y, text: str, color, life: 1.6, max: 1.6 });
@@ -409,6 +408,7 @@ if (params.has('debug')) {
         get game() {
             return game;
         },
+        renderer,
         start: begin,
         step(count = 1) {
             game.manual = true;
