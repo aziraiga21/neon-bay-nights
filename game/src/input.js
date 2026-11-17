@@ -1,53 +1,58 @@
-// Keyboard and pointer input. Held keys give a steering direction; one-shot presses (start or
-// restart, pause) are queued as bit flags and taken once by the loop, so a press between two
-// frames is never lost and never counted twice.
-
-export const ACTION_CONFIRM = 1;
-export const ACTION_PAUSE = 2;
-
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
-
-export function createInput(target) {
-  let left = false;
-  let right = false;
-  let actions = 0;
-
-  window.addEventListener('keydown', (event) => {
-    if (LEFT.has(event.code)) left = true;
-    else if (RIGHT.has(event.code)) right = true;
-    else if (CONFIRM.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_CONFIRM;
-    } else if (PAUSE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PAUSE;
-    } else return;
-    event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => {
-    if (LEFT.has(event.code)) left = false;
-    else if (RIGHT.has(event.code)) right = false;
-  });
-  // A key released while the tab is hidden never sends keyup: let go of everything on blur.
-  window.addEventListener('blur', () => {
-    left = false;
-    right = false;
-  });
-  target.addEventListener('pointerdown', () => {
-    actions |= ACTION_CONFIRM;
-  });
-
-  return {
-    /** -1 for left, 1 for right, 0 for neither or both. */
-    direction() {
-      return (right ? 1 : 0) - (left ? 1 : 0);
-    },
-    /** The one-shot presses since the last call, as ACTION_* flags. */
-    takeActions() {
-      const taken = actions;
-      actions = 0;
-      return taken;
-    },
-  };
+const BLOCKED = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Tab']);
+export class Input {
+    constructor(canvas) {
+        this.keys = new Set();
+        this.pressed = new Set();
+        this.mouse = {
+            x: 0, y: 0, down: false, aim: false
+        };
+        this.canvas = canvas;
+        window.addEventListener('keydown', e => {
+            if (BLOCKED.has(e.code)) {
+                e.preventDefault();
+            }
+            if (!this.keys.has(e.code)) {
+                this.pressed.add(e.code);
+            }
+            this.keys.add(e.code);
+        });
+        window.addEventListener('keyup', e => this.keys.delete(e.code));
+        canvas.addEventListener('pointermove', e => {
+            const r = canvas.getBoundingClientRect();
+            this.mouse.x = e.clientX - r.left;
+            this.mouse.y = e.clientY - r.top;
+            this.mouse.aim = true;
+        });
+        canvas.addEventListener('pointerdown', e => {
+            if (e.button === 0) {
+                this.mouse.down = true;
+                this.mouse.aim = true;
+                canvas.focus();
+            }
+        });
+        window.addEventListener('pointerup', () => this.mouse.down = false);
+        canvas.addEventListener('contextmenu', e => e.preventDefault());
+        window.addEventListener('blur', () => this.clear());
+    }
+    down(...codes) {
+        return codes.some(c => this.keys.has(c));
+    }
+    tap(code) {
+        if (!this.pressed.has(code)) {
+            return false;
+        }
+        this.pressed.delete(code);
+        return true;
+    }
+    endFrame() {
+        this.pressed.clear();
+    }
+    clear() {
+        this.keys.clear();
+        this.pressed.clear();
+        this.mouse.down = false;
+    }
+    axes() {
+        return { x: Number(this.down('KeyD', 'ArrowRight')) - Number(this.down('KeyA', 'ArrowLeft')), y: Number(this.down('KeyS', 'ArrowDown')) - Number(this.down('KeyW', 'ArrowUp')) };
+    }
 }
