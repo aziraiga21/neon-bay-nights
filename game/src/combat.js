@@ -139,7 +139,7 @@ export function updateCombat(game, dt) {
             game.crime('ramming', 1.5, e, true);
         }
     }
-    if (game.enemies.length && !game.cornerRewarded && game.enemies.every(e => e.dead)) {
+    if (game.enemies.length && !game.cornerRewarded && game.enemies.filter(e => !e.missionId).length > 0 && game.enemies.filter(e => !e.missionId).every(e => e.dead)) {
         game.cornerRewarded = true;
         p.cash += 250;
         game.stats.earned += 250;

@@ -22,7 +22,8 @@ export function writeSave(game) {
         return true;
     }
     const d = {
-        version: 1, cash: Math.floor(game.player.cash), ammo: game.player.ammo, best: Math.max(game.best, game.stats.reputation), missions: [...game.mission.completed], unlockedCars: [...game.unlockedCars], settings: { muted: game.audio.muted, music: game.audio.musicEnabled }, savedAt: Date.now()
+        // Completed job IDs are stored alongside cash; active pursuits always restart fresh.
+        version: 1, cash: Math.floor(game.player.cash), ammo: game.player.ammo, best: Math.max(game.best, game.stats.reputation), missions: [...new Set(game.mission.completed)], unlockedCars: [...game.unlockedCars], settings: { muted: game.audio.muted, music: game.audio.musicEnabled }, savedAt: Date.now()
     };
     try {
         localStorage.setItem(KEY, JSON.stringify(d));

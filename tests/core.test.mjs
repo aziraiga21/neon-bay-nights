@@ -36,7 +36,7 @@ const { isSolid, lineClear, moveCircle, route } = await import('../game/src/worl
 const { makeCar, damageCar } = await import('../game/src/vehicles.js');
 const { interact, useService } = await import('../game/src/player.js');
 const { setWanted } = await import('../game/src/police.js');
-const { installMission } = await import('../game/src/missions.js');
+const { installMission, MISSIONS, JOB_POINTS, startMission, advanceDialogue, isUnlocked } = await import('../game/src/missions.js');
 const { readSave } = await import('../game/src/save.js');
 const { Renderer } = await import('../game/src/render.js');
 const { CARS, PALETTE: P } = await import('../game/src/config.js');
@@ -493,4 +493,185 @@ test('two minutes of city simulation remain finite, bounded and deterministic', 
         return g.cars.map(c => [c.x, c.y, c.h, c.hp]);
     }
     assert.deepEqual(run(), run());
+});
+
+
+test('story progression, briefings, timer failure, retry and saved rewards', () => {
+    const g = fresh();
+    assert.equal(startMission(g, 'm3'), false);
+    assert.ok(startMission(g, 'm1'));
+    const cash = g.player.cash;
+    step(g, 120);
+    assert.equal(g.mission.active.remaining, 90, 'briefing freezes the deadline');
+    advanceDialogue(g);
+    tap(g, 'KeyE');
+    assert.equal(g.player.car, g.mission.active.target);
+    hold(g, 'KeyW', 20);
+    assert.ok(g.stats.distance > 0);
+    g.mission.active.elapsed = 90;
+    step(g);
+    assert.equal(g.mode, 'mission-failed');
+    assert.equal(g.player.cash, cash);
+    assert.ok(startMission(g, 'm1'));
+    advanceDialogue(g);
+    tap(g, 'KeyE');
+    Object.assign(g.player.car, JOB_POINTS.hotel, { speed: 0, vx: 0, vy: 0 });
+    step(g);
+    assert.equal(g.mission.active.phase, 'outro');
+    assert.equal(g.player.cash, cash + 250);
+    step(g, 60);
+    assert.equal(g.player.cash, cash + 250, 'reward cannot be paid twice by the update loop');
+    assert.ok(isUnlocked(g.mission.completed, 'm2'));
+    assert.equal(isUnlocked(g.mission.completed, 'm3'), false);
+    assert.equal(readSave().cash, g.player.cash);
+    assert.deepEqual(readSave().missions, ['m1']);
+    advanceDialogue(g);
+    assert.equal(g.mission.active, null);
+});
+test('Hot Wheels finishes through real wanted decay; Repo Man requires the exact car', () => {
+    const g = fresh();
+    g.mission.completed = ['m1'];
+    startMission(g, 'm2');
+    advanceDialogue(g);
+    assert.equal(g.police.stars, 2);
+    g.cars = [g.player.car];
+    g.peds = [];
+    g.police.spawnTimer = 10000;
+    step(g, 2400);
+    assert.equal(g.police.stars, 0);
+    assert.equal(g.mission.active.phase, 'outro');
+    assert.equal(g.stats.escapes, 1);
+    advanceDialogue(g);
+    startMission(g, 'm3');
+    advanceDialogue(g);
+    const target = g.mission.active.target;
+    assert.equal(target.color, P.magenta);
+    const wrong = makeCar('sports', JOB_POINTS.garage.x, JOB_POINTS.garage.y, 0, P.magenta);
+    g.cars.push(wrong);
+    g.player.car = wrong;
+    step(g);
+    assert.equal(g.mission.active.phase, 'active');
+    g.player.car = target;
+    Object.assign(target, JOB_POINTS.garage, { speed: 0, vx: 0, vy: 0 });
+    step(g);
+    assert.equal(g.mission.active.phase, 'outro');
+    assert.ok(g.mission.completed.includes('m3'));
+});
+test('Diner Defense uses real combat and the van finale enforces all three stages', () => {
+    const g = fresh();
+    g.mission.completed = ['m1', 'm2', 'm3'];
+    startMission(g, 'm4');
+    advanceDialogue(g);
+    const foes = g.mission.active.foes;
+    assert.equal(foes.length, 4);
+    assert.ok(foes.every(e => !isSolid(g.world, e.x, e.y, 8)));
+    g.player.invincible = 1000;
+    g.police.spawnTimer = 10000;
+    g.cars = [];
+    g.peds = [];
+    g.enemies = foes;
+    for (const e of foes) e.cooldown = 1000;
+    for (const e of foes) {
+        Object.assign(g.player, { x: e.x - 24, y: e.y, h: 0 });
+        for (let i = 0; i < 3; i++) { Object.assign(g.player, { x: e.x - 24, y: e.y, h: 0 }); tap(g, 'KeyF'); step(g, 28); }
+        assert.equal(e.dead, true);
+    }
+    assert.equal(g.mission.active.phase, 'outro');
+    advanceDialogue(g);
+    startMission(g, 'm5');
+    advanceDialogue(g);
+    const van = g.mission.active.target;
+    assert.equal(van.type, 'armored');
+    assert.equal(isSolid(g.world, van.x, van.y, 20), false);
+    Object.assign(g.player, { x: van.x + 25, y: van.y });
+    tap(g, 'KeyE');
+    assert.equal(g.player.car, van);
+    assert.equal(g.police.stars, 3);
+    assert.equal(g.mission.active.stage, 'chase');
+    Object.assign(van, JOB_POINTS.garage, { speed: 0, vx: 0, vy: 0 });
+    step(g);
+    assert.equal(g.mission.active.phase, 'active', 'cannot deliver with three stars');
+    g.police.units = [];
+    g.police.officers = [];
+    g.police.spawnTimer = 10000;
+    g.cars = [van];
+    step(g, 3000);
+    assert.equal(g.police.stars, 0);
+    assert.equal(g.mission.active.phase, 'outro');
+    assert.deepEqual(g.mission.completed, MISSIONS.map(m => m.id));
+    advanceDialogue(g);
+    assert.equal(g.mode, 'ending');
+});
+test('mission death and target wrecks fail without paying, and menus launch/retry jobs', () => {
+    const menu = action => screen.emit('click', { target: { closest: () => ({ dataset: { action } }) } });
+    const g = fresh();
+    g.mission.completed = ['m1', 'm2'];
+    startMission(g, 'm3');
+    advanceDialogue(g);
+    const cash = g.player.cash;
+    damageCar(g, g.mission.active.target, 1000);
+    assert.equal(g.mode, 'mission-failed');
+    assert.equal(g.player.cash, cash);
+    window.__neon.start();
+    menu('missions');
+    assert.match(screen.innerHTML, /First Delivery/);
+    assert.match(screen.innerHTML, /LOCKED/);
+    menu('job-m1');
+    const active = window.__neon.game;
+    assert.equal(active.mission.active.id, 'm1');
+    advanceDialogue(active);
+    active.end('busted');
+    assert.equal(active.mode, 'mission-failed');
+    assert.match(screen.innerHTML, /RETRY JOB/);
+    menu('retry-job');
+    assert.equal(window.__neon.game.mission.active.phase, 'briefing');
+});
+test('all four capture autopilots advance real actors and preserve usable scenes', async () => {
+    const { createShot } = await import('../game/src/shots.js');
+    for (const name of ['cover', 'chase', 'mission', 'city']) {
+        const g = fresh();
+        g.capture = true;
+        const shot = createShot(name, g);
+        for (let i = 0; i < 900 && !shot.ready; i++) {
+            shot.beforeStep();
+            step(g);
+            shot.afterStep();
+        }
+        assert.ok(shot.ready, name);
+        assert.equal(g.mode, 'play', name);
+        assert.ok(g.player.health > 0, name);
+        assert.ok(g.peds.filter(p => !p.dead && Math.hypot(p.x - g.player.x, p.y - g.player.y) < 500).length >= 4, name);
+        if (name === 'cover' || name === 'chase') {
+            assert.equal(g.player.car?.type, 'sports', name);
+            assert.ok(g.player.car.speed > 80, `${name} speed ${g.player.car.speed}`);
+            assert.equal(g.player.car.wreck, false);
+            assert.ok(g.police.stars > 0, name);
+        }
+        if (name === 'chase') {
+            assert.equal(g.police.stars, 3);
+            assert.ok(g.police.units.filter(u => Math.hypot(u.car.x - g.player.x, u.car.y - g.player.y) < 450).length >= 2);
+            assert.ok(g.skids.length > 5, `skids: ${g.skids.length}`);
+        }
+        if (name === 'mission') {
+            assert.equal(g.mission.active.id, 'm3');
+            assert.equal(g.player.car, null);
+            assert.ok(Math.hypot(g.player.x - g.mission.active.target.x, g.player.y - g.mission.active.target.y) < 75);
+        }
+        const r = new Renderer(canvas, g.world);
+        r.render(g);
+        r.render(g);
+    }
+});
+
+test('shot URL bootstrapping signals ready only after two final paints', async () => {
+    for (const name of ['cover', 'chase', 'mission', 'city']) {
+        location.search = `?shot=${name}&seed=1706&debug=1`;
+        await import(`../game/src/main.js?capture-test=${name}`);
+        let ticks = 0, now = performance.now();
+        while (!window.__shotReady && ticks++ < 100) pendingFrame(now += 1000 / 60);
+        assert.ok(window.__shotReady, name);
+        assert.equal(window.__neon.game.capture, true);
+        assert.equal(window.__neon.game.mode, 'play');
+        assert.equal(window.__neon.game.saveError, false);
+    }
 });

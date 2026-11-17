@@ -34,6 +34,9 @@ export const CARS = {
     van: {
         name: 'Harbor Hauler', length: 52, width: 24, max: 225, accel: 145, grip: 6, hp: 185
     },
+    armored: {
+        name: 'Bay Trust Armoured Van', length: 56, width: 26, max: 245, accel: 170, grip: 6.5, hp: 300
+    },
     police: {
         name: 'NBPD Interceptor', length: 48, width: 23, max: 350, accel: 225, grip: 8.5, hp: 180
     }

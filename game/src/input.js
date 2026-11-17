@@ -8,6 +8,8 @@ export class Input {
         };
         this.canvas = canvas;
         window.addEventListener('keydown', e => {
+            // Let menu buttons keep native keyboard activation and focus navigation.
+            if (e.target?.closest?.('#screen') && ['Tab', 'Space', 'Enter'].includes(e.code)) return;
             if (BLOCKED.has(e.code)) {
                 e.preventDefault();
             }

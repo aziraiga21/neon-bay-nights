@@ -1,66 +1,114 @@
-// Deterministic capture preparation. Scenes advance the real simulation at a fixed timestep.
-// The phase-2 mission scene can install a mission through main.js's mission state hook.
-import { angleDelta, dist } from './config.js';
+// Capture scenes seed ordinary actors, then advance the live simulation with keyboard autopilots.
+import { PALETTE as P, angleDelta, dist } from './config.js';
+import { makeCar } from './vehicles.js';
 import { setWanted } from './police.js';
+import { startMission, advanceDialogue } from './missions.js';
+import { addPed } from './pedestrians.js';
+
 export function createShot(name, game) {
-    if (!['cover', 'chase', 'mission', 'city'].includes(name)) {
-        return null;
-    }
+    if (!['cover', 'chase', 'mission', 'city'].includes(name)) return null;
     const input = game.input;
     input.clear();
     input.mouse.aim = false;
+    game.toast = null;
+    game.lastSave = Infinity;
     let frame = 0, ready = false;
-    const car = game.cars.find(c => c.type === 'sports' && c.ai === 'parked' && dist(c, game.player) < 90);
-    const waypoints = [{ x: 2578, y: 1530 }, { x: 2581, y: 1780 }, { x: 2581, y: 2100 }, { x: 2581, y: 2430 }];
-    let point = 0;
+    let waypoints = [], point = 0;
+    const finish = name === 'cover' ? 205 : name === 'chase' ? 210 : 90;
+    if (name === 'mission') {
+        game.mission.completed = ['m1', 'm2'];
+        startMission(game, 'm3');
+        advanceDialogue(game);
+    } else if (name === 'chase') {
+        game.mission.completed = ['m1'];
+        startMission(game, 'm2');
+        advanceDialogue(game);
+        const c = game.player.car;
+        Object.assign(c, { x: 2542, y: 1380, h: Math.PI / 2 });
+        Object.assign(game.player, { x: c.x, y: c.y, h: c.h });
+        game.cars = game.cars.filter(o => o === c || o.x < 2480 || o.x > 2640 || o.y < 750 || o.y > 2100);
+        for (const [x, y] of [[2542, 900], [2577, 820]]) {
+            const cruiser = makeCar('police', x, y, Math.PI / 2, P.pearl, 'police');
+            cruiser.driver = true;
+            cruiser.speed = cruiser.vy = 140;
+            game.cars.push(cruiser);
+            game.police.units.push({ car: cruiser, path: [], repath: 0, deployed: false, retire: 0 });
+        }
+        setWanted(game, 3);
+        game.police.spawnTimer = 100;
+        waypoints = [{ x: 2542, y: 1510 }, { x: 2558, y: 1690 }, { x: 2542, y: 1900 }];
+    } else if (name === 'cover') {
+        const c = makeCar('sports', 2578, 1680, -Math.PI / 2, P.magenta);
+        game.cars = game.cars.filter(o => dist(o, c) > 80);
+        game.cars.push(c);
+        Object.assign(game.player, { x: 2610, y: 1680, h: Math.PI });
+        game.waypoint = { x: 2578, y: 1035, label: 'OCEAN DRIVE · SUNSET RUN' };
+        waypoints = [{ x: 2578, y: 1050 }];
+    } else {
+        Object.assign(game.player, { x: 2108, y: 706, h: Math.PI / 2 });
+    }
+    if (name === 'mission') {
+        for (const c of game.cars) {
+            if (c !== game.mission.active.target && c.color === P.magenta && dist(c, game.player) < 500) c.color = P.carCoral;
+        }
+    }
+    // People use their normal sidewalk graph; the camera never contains decorative fake actors.
+    const y = name === 'mission' ? 2176 : name === 'chase' ? 1792 : name === 'city' ? 640 : 1408;
+    for (const [x, dy] of [[name === 'city' ? 2110 : 2494, -66], [name === 'city' ? 2110 : 2494, 66], [name === 'city' ? 2242 : 2626, -66], [name === 'city' ? 2242 : 2626, 66], [2242, 66], [2110, 66]]) {
+        addPed(game, x, y + dy);
+        addPed(game, x, y + dy);
+    }
+    // A cab and a coral sedan make both lanes readable near the coastal crossroads.
+    if (name === 'cover' || name === 'city') {
+        const cab = makeCar('taxi', 2542, 1210, Math.PI / 2, P.taxi, 'traffic');
+        cab.route = { from: 20, to: 27 };
+        cab.cruise = 80;
+        game.cars.push(cab);
+        const sedan = makeCar('sedan', 2340, 1426, 0, P.carCoral, 'traffic');
+        sedan.route = { from: 26, to: 27 };
+        sedan.cruise = 95;
+        game.cars.push(sedan);
+    }
+    Object.assign(game.camera, { x: game.player.x, y: game.player.y, zoom: 1.16 });
+    game.time = 150; // 17:58: a consistent late sunset, on the game's day-to-dusk clock.
     return {
-        name, get ready() {
-            return ready;
-        },
+        name,
+        get ready() { return ready; },
         beforeStep() {
             frame++;
             input.keys.clear();
             input.pressed.clear();
-            if (name === 'city') {
-                if (frame < 70) {
-                    input.keys.add('KeyD');
-                }
-                if (frame > 70 && frame < 115) {
-                    input.keys.add('KeyS');
-                }
-            }
-            else if (name === 'mission') {
-                game.waypoint = { x: game.world.services[1].x, y: game.world.services[1].y, label: 'MARLOWE MOTOR CO.' };
-                if (frame < 60) {
-                    input.keys.add('KeyA');
-                }
-            }
-            else {
-                if (frame === 1 && car) {
-                    input.pressed.add('KeyE');
-                }
-                if (game.player.car) {
-                    const c = game.player.car, target = waypoints[point];
-                    if (dist(c, target) < 75 && point < waypoints.length - 1) {
-                        point++;
-                    }
-                    const a = Math.atan2(target.y - c.y, target.x - c.x), delta = angleDelta(c.h, a);
-                    if (Math.abs(delta) > .1) {
-                        input.keys.add(delta > 0 ? 'KeyD' : 'KeyA');
-                    }
-                    if (Math.abs(c.speed) < (Math.abs(delta) > .7 ? 95 : name === 'chase' ? 205 : 135)) {
-                        input.keys.add('KeyW');
-                    }
-                    if (frame === 70 && name === 'chase') {
-                        setWanted(game, 3);
+            if (name === 'mission') {
+                if (frame < 22) input.keys.add('KeyS');
+            } else if (name === 'city') {
+                if (frame < 38) input.keys.add('KeyS');
+            } else {
+                if (name === 'cover' && frame === 1) input.pressed.add('KeyE');
+                const c = game.player.car;
+                if (c) {
+                    if (point < waypoints.length - 1 && dist(c, waypoints[point]) < 75) point++;
+                    const target = waypoints[point], a = Math.atan2(target.y - c.y, target.x - c.x), delta = angleDelta(c.h, a);
+                    if (Math.abs(delta) > .06) input.keys.add(delta > 0 ? 'KeyD' : 'KeyA');
+                    const speed = name === 'chase' ? 195 : 150;
+                    if (Math.abs(c.speed) < (Math.abs(delta) > .65 ? 85 : speed)) input.keys.add('KeyW');
+                    if (Math.abs(c.speed) > speed + 20) input.keys.add('KeyS');
+                    if (name === 'chase' && frame > 118 && frame < 132) input.keys.add('ShiftLeft');
+                    if (name === 'cover' && frame === 100) {
+                        setWanted(game, 1);
+                        game.police.spawnTimer = 100;
                     }
                 }
             }
         },
         afterStep() {
-            if (frame >= (name === 'chase' ? 640 : name === 'cover' ? 230 : 120)) {
+            game.toast = null;
+            if (frame >= finish) {
                 ready = true;
                 input.clear();
+                // Capture framing alone is fixed; actor positions come from the simulation above.
+                game.camera.zoom = name === 'city' ? .86 : name === 'mission' ? 1.16 : 1.1;
+                game.camera.x = game.player.x + (name === 'city' ? 252 : 65);
+                game.camera.y = game.player.y - (name === 'chase' ? 50 : 0);
             }
         }
     };

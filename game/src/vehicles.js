@@ -222,6 +222,7 @@ function physics(game, c, dt, controlled) {
                     x, y, h: c.h, life: 26
                 });
             }
+            if (c.handbrake) game.burst(c.x - Math.cos(c.h) * 18, c.y - Math.sin(c.h) * 18, 'smoke', 1);
             if (game.skids.length > 500) {
                 game.skids.splice(0, 10);
             }

@@ -398,7 +398,7 @@ export function drawCar(ctx, c, time, dusk = 0) {
     ctx.fillStyle = '#F6F1E770';
     ctx.fillRect(-l / 2 + 4, -w / 2 + 1, l - 9, 2);
     ctx.restore();
-    if (c.type === 'van') {
+    if (c.type === 'van' || c.type === 'armored') {
         round(ctx, -l / 2 + 4, -w / 2 + 3, l * .62, w - 6, 2, body);
         ctx.strokeStyle = '#1C19163A';
         ctx.strokeRect(-l / 2 + 6, -w / 2 + 4, l * .57, w - 8);
@@ -423,6 +423,11 @@ export function drawCar(ctx, c, time, dusk = 0) {
             ctx.fillRect(14, -4, 6, 1);
             ctx.fillRect(14, 3, 6, 1);
         }
+    }
+    if (c.type === 'armored') {
+        round(ctx, -19, -8, 25, 16, 2, '#637F7C', P.ink);
+        for (const x of [-16, 2]) for (const y of [-6, 6]) ellipse(ctx, x, y, 1.2, 1.2, P.trim);
+        text(ctx, 'BT', -7, 3, 7, P.trim, 'center');
     }
     ctx.fillStyle = P.carGlass;
     ctx.fillRect(0, -w / 2 - 2, 5, 2);

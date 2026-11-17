@@ -142,6 +142,13 @@ export class Renderer {
         }
         const marker = game.mission.marker || game.waypoint;
         if (marker) {
+            if (game.mission.marker && visible(marker.x, marker.y, 80)) {
+                const beam = ctx.createLinearGradient(0, marker.y - 115, 0, marker.y);
+                beam.addColorStop(0, '#F0B42900');
+                beam.addColorStop(1, '#F0B42945');
+                ctx.fillStyle = beam;
+                ctx.fillRect(marker.x - 17, marker.y - 115, 34, 115);
+            }
             this.marker(ctx, marker.x, marker.y, game.mission.marker ? '!' : '◆', marker.label || 'WAYPOINT', game.time, true, P.mango);
         }
         if (game.player.car && game.player.flash > 0) {
@@ -199,7 +206,20 @@ export class Renderer {
                 drawFullMap(ctx, game, this);
             }
         }
-        if (game.input.mouse.aim && game.mode === 'play' && !game.mapOpen) {
+        if (game.mission.marker && game.mode === 'play' && !game.mapOpen && !game.mission.dialogue) {
+            const target = game.mission.marker, tx = sx + target.x * z, ty = sy + target.y * z;
+            if (tx < 80 || tx > w - 80 || ty < 95 || ty > h - 140) {
+                const a = Math.atan2(target.y - game.player.y, target.x - game.player.x);
+                const radius = Math.min(w * .22, h * .23), ax = w / 2 + Math.cos(a) * radius, ay = h / 2 + Math.sin(a) * radius;
+                ctx.save();
+                ctx.translate(ax, ay);
+                ctx.rotate(a);
+                polygon(ctx, [[14, 0], [-8, -8], [-3, 0], [-8, 8]], P.mango, P.ink);
+                ctx.restore();
+                text(ctx, `${Math.floor(dist(game.player, target))} m`, ax, ay + 25, 10, P.mango, 'center');
+            }
+        }
+        if (game.input.mouse.aim && game.mode === 'play' && !game.mapOpen && !game.mission.dialogue) {
             const m = game.input.mouse;
             ctx.strokeStyle = P.paper;
             ctx.lineWidth = 1;

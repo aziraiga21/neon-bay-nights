@@ -8,7 +8,7 @@ import { populateVehicles, updateVehicles } from './vehicles.js';
 import { populatePeds, updatePeds, addPed } from './pedestrians.js';
 import { makePolice, updatePolice, reportCrime } from './police.js';
 import { populateEnemies, updateCombat } from './combat.js';
-import { createMissionState, updateMissions, installMission, missionEvent } from './missions.js';
+import { createMissionState, updateMissions, installMission, missionEvent, MISSIONS, isUnlocked, startMission, advanceDialogue, failMission } from './missions.js';
 import { readSave, writeSave } from './save.js';
 import { Renderer, updateCamera } from './render.js';
 import { createShot } from './shots.js';
@@ -38,8 +38,15 @@ export function createGame(seed, save = null) {
         save() {
             return writeSave(this);
         },
+        onMissionScreen(mode) {
+            if (this === game) showMenu(mode);
+        },
         end(reason) {
             if (this.mode !== 'play') {
+                return;
+            }
+            if (this.mission.active?.phase === 'active') {
+                failMission(this, reason === 'busted' ? 'Neon Bay PD caught you. Rosa is ready for another attempt.' : 'Jax went down. Take a breath and try the job again.');
                 return;
             }
             this.mode = 'over';
@@ -83,6 +90,10 @@ export function updateGame(g, dt = 1 / 60) {
     if (g.mode !== 'play' || g.mapOpen) {
         return;
     }
+    if (g.mission.dialogue) {
+        if (g.input.tap('Enter') || g.input.tap('Space') || g.input.tap('KeyE')) advanceDialogue(g);
+        return;
+    }
     g.time += dt;
     const minutes = (1030 + g.time * .32) % 1440;
     g.clock = `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(Math.floor(minutes % 60)).padStart(2, '0')}`;
@@ -97,7 +108,9 @@ export function updateGame(g, dt = 1 / 60) {
     }
     updateVehicles(g, dt);
     updatePeds(g, dt);
+    if (g.mode !== 'play') return;
     updateCombat(g, dt);
+    if (g.mode !== 'play') return;
     updateMissions(g, dt);
     updateCamera(g, dt);
     g.shake = Math.max(0, g.shake - dt * 15);
@@ -152,16 +165,50 @@ function start(continued = false, recovery = null) {
     game.notify(recovery ? 'A NEW SUNSET' : continued ? 'WELCOME BACK, JAX' : 'YOUR CITY. YOUR CALL.', recovery ? 'The clinic patched you up. Take it easy out there.' : continued ? 'Your cash and progress are safe. Rosa kept your seat.' : 'Walk up to the magenta Mirage GT. Press E to drive.');
     game.save();
 }
+function launchJob(id) {
+    const progress = { cash: game.player.cash, ammo: game.player.ammo, best: game.best, missions: [...game.mission.completed], cars: [...game.unlockedCars] };
+    start(false, progress);
+    startMission(game, id);
+    game.save();
+}
+let missionMenuReturn = 'title';
+function missionMenu() {
+    if (game.mode === 'title') {
+        missionMenuReturn = 'title';
+        const saved = readSave();
+        if (saved) game = createGame(seed, saved);
+    } else {
+        missionMenuReturn = 'pause';
+        game.save();
+    }
+    game.mode = 'missions';
+    input.clear();
+    showMenu('missions');
+}
 const controls = `<div class="controls"><div><kbd>WASD</kbd> / <kbd>↑↓←→</kbd> Move / drive</div><div><kbd>E</kbd> Enter, exit, steal / use shop</div><div><kbd>SHIFT</kbd> Sprint / handbrake · <kbd>R</kbd> Repair</div><div><kbd>SPACE</kbd> Fire · Mouse to aim & fire</div><div><kbd>F</kbd> Punch · <kbd>TAB</kbd> City map</div><div><kbd>ESC</kbd> / <kbd>P</kbd> Pause · <kbd>M</kbd> Mute</div></div>`;
 function showMenu(mode) {
     screen.classList.remove('hidden');
     screen.style.background = mode === 'title' ? '' : '#142D3878';
     if (mode === 'title') {
         const saved = readSave();
-        screen.innerHTML = `<div class="panel"><p class="eyebrow">AN ORIGINAL OPEN-WORLD CRIME GAME</p><h1 class="logo">NEON BAY<br><span>NIGHTS</span></h1><p class="tagline">GOOD WEATHER. BAD DECISIONS.</p><p class="story"><strong>You’re Jax Marlowe.</strong> A courier with a dream of his own garage, in a city that never gives anything away.<br>Find a ride. Make some trouble. Lose the heat.<br>The bay is yours tonight.</p><div class="actions"><button data-action="${saved ? 'continue' : 'new'}" class="primary">${saved ? 'CONTINUE  ↗' : 'HIT THE STREETS  ↗'}</button>${saved ? '<button data-action="new">NEW GAME</button>' : ''}</div>${controls}<p class="footer">CORAL MILE / GLASSWATER / MARLIN WHARF<br><br>100% ORIGINAL ART & SOUND · SAVES ON THIS DEVICE</p><p class="touch-note">Made for a keyboard and mouse.</p></div>`;
+        screen.innerHTML = `<div class="panel"><p class="eyebrow">AN ORIGINAL OPEN-WORLD CRIME GAME</p><h1 class="logo">NEON BAY<br><span>NIGHTS</span></h1><p class="tagline">GOOD WEATHER. BAD DECISIONS.</p><p class="story"><strong>You’re Jax Marlowe.</strong> A courier with a dream of his own garage, in a city that never gives anything away.<br>Find a ride. Make some trouble. Lose the heat.<br>The bay is yours tonight.</p><div class="actions"><button data-action="${saved ? 'continue' : 'new'}" class="primary">${saved ? 'CONTINUE  ↗' : 'HIT THE STREETS  ↗'}</button>${saved ? '<button data-action="new">NEW GAME</button>' : ''}<button data-action="missions">ROSA’S JOBS</button></div>${controls}<p class="footer">CORAL MILE / GLASSWATER / MARLIN WHARF<br><br>100% ORIGINAL ART & SOUND · SAVES ON THIS DEVICE</p><p class="touch-note">Made for a keyboard and mouse.</p></div>`;
     }
     else if (mode === 'pause') {
-        screen.innerHTML = `<div class="compact"><p class="eyebrow">TAKE A BREATHER</p><h1>BAY ON HOLD.</h1><p class="story">${money(game.player.cash)} in your pocket. A whole city outside.<br>${game.saveError ? 'Your browser could not save. Keep this tab open.' : 'Your progress has been saved on this device.'}</p><div class="actions"><button class="primary" data-action="resume">BACK TO THE BAY</button><button data-action="title">SAVE & TITLE</button><button data-action="music">MUSIC ${audio.musicEnabled ? 'ON' : 'OFF'}</button><button data-action="mute">SOUND ${audio.muted ? 'OFF' : 'ON'}</button></div>${controls}</div>`;
+        screen.innerHTML = `<div class="compact"><p class="eyebrow">TAKE A BREATHER</p><h1>BAY ON HOLD.</h1><p class="story">${money(game.player.cash)} in your pocket. A whole city outside.<br>${game.saveError ? 'Your browser could not save. Keep this tab open.' : 'Your progress has been saved on this device.'}</p><div class="actions"><button class="primary" data-action="resume">BACK TO THE BAY</button><button data-action="missions">ROSA’S JOBS</button><button data-action="title">SAVE & TITLE</button><button data-action="music">MUSIC ${audio.musicEnabled ? 'ON' : 'OFF'}</button><button data-action="mute">SOUND ${audio.muted ? 'OFF' : 'ON'}</button></div>${controls}</div>`;
+    }
+    else if (mode === 'missions') {
+        const completed = game.mission.completed;
+        screen.innerHTML = `<div class="compact jobs"><p class="eyebrow">MAMA ROSA · BEACHFRONT FIXER</p><h1>ROSA’S JOBS.</h1><p class="mini">${completed.filter(id => MISSIONS.some(m => m.id === id)).length} / 5 complete · ${money(game.player.cash)}<br>Choose an unlocked job. Replays pay the same reward.</p><div class="job-list">${MISSIONS.map((m, i) => {
+            const unlocked = isUnlocked(completed, m.id), done = completed.includes(m.id);
+            return `<button data-action="job-${m.id}" ${unlocked ? '' : 'disabled'}><span class="job-number">0${i + 1}</span><span><strong>${m.title}</strong><small>${m.summary}</small></span><span class="job-reward">${unlocked ? money(m.reward) : 'LOCKED'}<small>${done ? '✓ COMPLETE' : unlocked ? 'AVAILABLE' : 'FINISH PREVIOUS'}</small></span></button>`;
+        }).join('')}</div><div class="actions"><button class="primary" data-action="jobs-back">BACK</button></div><p class="mini">Each job starts at its meeting point with a fresh ride and full health.<br>Cash and completed jobs stay with you. Free roam is always available.</p></div>`;
+    }
+    else if (mode === 'mission-failed') {
+        const result = game.mission.result;
+        screen.innerHTML = `<div class="compact"><p class="eyebrow">ROSA’S JOBS · ${game.mission.active.title.toUpperCase()}</p><h1 class="red">JOB FAILED.</h1><p class="story">${result.reason}</p><p class="mini">Your completed jobs and cash are saved.</p><div class="actions"><button class="primary" data-action="retry-job">RETRY JOB ↗</button><button data-action="missions">ROSA’S JOBS</button><button data-action="free-roam">FREE ROAM</button></div></div>`;
+    }
+    else if (mode === 'ending') {
+        screen.innerHTML = `<div class="compact ending"><p class="eyebrow">FIVE JOBS. ONE UNFORGETTABLE NIGHT.</p><h1>NEON BAY<br><span class="gold">LEGEND.</span></h1><p class="story">Jax Marlowe. Courier, driver, and the name the Copper Kings wish they’d never heard.<br>Rosa’s lights are still on. Your garage is open. The bay belongs to you tonight.</p><p class="mini">THE BIG SCORE · +$2,000<br>All five jobs complete · ${money(game.player.cash)} in your pocket</p><div class="actions"><button class="primary" data-action="free-roam">KEEP THE NIGHT GOING ↗</button><button data-action="missions">REPLAY JOBS</button><button data-action="title">TITLE SCREEN</button></div></div>`;
     }
     else {
         const busted = game.reason === 'busted', fine = busted ? 150 : 75;
@@ -198,6 +245,20 @@ screen.addEventListener('click', e => {
     const action = e.target.closest('button')?.dataset.action;
     if (!action) {
         return;
+    }
+    if (action === 'missions') missionMenu();
+    if (action?.startsWith('job-')) {
+        const id = action.slice(4);
+        if (isUnlocked(game.mission.completed, id)) launchJob(id);
+    }
+    if (action === 'retry-job') launchJob(game.mission.active.id);
+    if (action === 'free-roam') {
+        const progress = { cash: game.player.cash, ammo: game.player.ammo, best: game.best, missions: game.mission.completed, cars: [...game.unlockedCars] };
+        start(false, progress);
+    }
+    if (action === 'jobs-back') {
+        if (missionMenuReturn === 'title') { game.mode = 'title'; showMenu('title'); }
+        else { game.mode = game.mission.active?.phase === 'failed' ? 'mission-failed' : 'pause'; showMenu(game.mode); }
     }
     if (action === 'new') {
         start();
@@ -276,11 +337,15 @@ if (params.has('debug')) {
             renderer.render(game);
         }, resumeClock() {
             game.manual = false;
+        }, startMission(id) {
+            return startMission(game, id);
+        }, advanceDialogue() {
+            advanceDialogue(game);
         }, installMission(m) {
             installMission(game, m);
         }, snapshot() {
             return {
-                mode: game.mode, time: game.time, x: game.player.x, y: game.player.y, h: game.player.h, health: game.player.health, cash: game.player.cash, ammo: game.player.ammo, car: game.player.car?.type, carHP: game.player.car?.hp, stars: game.police.stars, heat: game.police.heat, police: game.police.units.length, officers: game.police.officers.length, peds: game.peds.length, cars: game.cars.length, particles: game.particles.length
+                mission: game.mission.active?.id, phase: game.mission.active?.phase, objective: game.mission.objective, completed: [...game.mission.completed], mode: game.mode, time: game.time, x: game.player.x, y: game.player.y, h: game.player.h, health: game.player.health, cash: game.player.cash, ammo: game.player.ammo, car: game.player.car?.type, carHP: game.player.car?.hp, stars: game.police.stars, heat: game.police.heat, police: game.police.units.length, officers: game.police.officers.length, peds: game.peds.length, cars: game.cars.length, particles: game.particles.length
             };
         }
     };
@@ -305,6 +370,10 @@ function frame(now) {
         }
         else if (game.mode === 'pause') {
             resume();
+        }
+        else if (game.mode === 'missions') {
+            if (missionMenuReturn === 'title') { game.mode = 'title'; showMenu('title'); }
+            else { game.mode = game.mission.active?.phase === 'failed' ? 'mission-failed' : 'pause'; showMenu(game.mode); }
         }
     }
     if (input.tap('Tab') && game.mode === 'play') {

@@ -144,7 +144,8 @@ export function drawHUD(ctx, game, renderer) {
     }
     const marker = game.mission.marker || game.waypoint;
     if (marker) {
-        const q = point(marker.x, marker.y);
+        const raw = point(marker.x, marker.y), q = { x: clamp(raw.x, mx + 10, mx + mw - 10), y: clamp(raw.y, my + 10, my + mh - 10) };
+        ellipse(ctx, q.x, q.y, 7, 7, '#17343C');
         ellipse(ctx, q.x, q.y, 5, 5, P.mango);
         ellipse(ctx, q.x, q.y, 2, 2, P.paper);
     }
@@ -159,7 +160,7 @@ export function drawHUD(ctx, game, renderer) {
     text(ctx, game.clock, mx + 12, my + mh + 20, 12, P.paper);
     text(ctx, 'TAB  CITY MAP', mx + mw - 12, my + mh + 20, 9, '#ABC6BD', 'right');
     panel(ctx, w - 330, h - 133, 306, 109);
-    text(ctx, game.mission.active ? 'ON THE JOB' : 'FREE ROAM', w - 312, h - 113, 9, P.mango);
+    text(ctx, game.mission.active ? `${game.mission.active.id?.toUpperCase() || 'JOB'} · ${game.mission.active.title?.toUpperCase() || 'ON THE JOB'}` : 'FREE ROAM', w - 312, h - 113, 9, P.mango);
     const objective = game.mission.objective || 'Explore Neon Bay. Make the city yours.';
     wrap(ctx, objective, w - 312, h - 92, 270, 12, P.paper);
     const marker2 = game.mission.marker || game.waypoint;
@@ -185,9 +186,18 @@ export function drawHUD(ctx, game, renderer) {
         round(ctx, w / 2 - pw / 2, h - 103, pw, 32, 5, '#17343CEF', '#F0B42955');
         text(ctx, prompt, w / 2, h - 82, 11, P.mango, 'center');
     }
+    if (game.mission.active?.remaining != null) {
+        const remaining = Math.ceil(game.mission.active.remaining), x = w - 142, y = h - (p.car ? 285 : 175);
+        panel(ctx, x, y, 118, 32);
+        text(ctx, `${String(Math.floor(remaining / 60)).padStart(2, '0')}:${String(remaining % 60).padStart(2, '0')}  LEFT`, x + 59, y + 22, 15, remaining < 20 ? P.policeRed : P.mango, 'center');
+    }
     const controls = p.car ? 'W S  THROTTLE / BRAKE     A D  STEER     SHIFT  DRIFT' : 'WASD  MOVE     SHIFT  SPRINT     SPACE  FIRE     F  PUNCH';
-    text(ctx, controls, w / 2, h - 27, 8, '#D2DACC', 'center');
-    text(ctx, `${game.audio.muted ? 'M  UNMUTE' : 'M  SOUND'}   ·   ESC  PAUSE`, w - 27, 187, 8, '#E0E4D3', 'right');
+    const cw = Math.min(w - 590, 530);
+    panel(ctx, w / 2 - cw / 2, h - 41, cw, 27);
+    text(ctx, controls, w / 2, h - 23, 8, '#E0E4D3', 'center');
+    const hintY = p.car ? 177 : 163;
+    panel(ctx, w - 285, hintY, 261, 25);
+    text(ctx, `${game.audio.muted ? 'M  UNMUTE' : 'M  SOUND'}   ·   ESC / P  PAUSE`, w - 154, hintY + 16, 9, '#E0E4D3', 'center');
     if (game.toast && game.toast.until > game.time) {
         const toast = game.toast, tw = Math.min(460, Math.max(340, toast.sub.length * 5.4 + 42)), ty = h - 190;
         ctx.globalAlpha = clamp((toast.until - game.time) * 2, 0, 1);
@@ -197,6 +207,20 @@ export function drawHUD(ctx, game, renderer) {
         text(ctx, toast.title, w / 2 - tw / 2 + 18, ty + 25, 12, toast.color);
         text(ctx, toast.sub, w / 2 - tw / 2 + 18, ty + 45, 10, P.paper);
         ctx.globalAlpha = 1;
+    }
+    if (game.mission.dialogue) {
+        const d = game.mission.dialogue, m = game.mission.active, dh = 66 + d.lines.length * 67;
+        panel(ctx, 24, 112, 420, dh);
+        ctx.fillStyle = P.mango;
+        ctx.fillRect(24, 129, 3, dh - 34);
+        text(ctx, `${d.outro ? 'JOB COMPLETE' : 'ROSA’S JOBS'} · ${m.title.toUpperCase()}`, 43, 138, 11, P.mango);
+        let y = 161;
+        for (const [speaker, line] of d.lines) {
+            text(ctx, speaker, 43, y, 8, speaker === 'JAX' ? P.cyan : P.carCoral);
+            wrap(ctx, line, 43, y + 17, 376, 11, P.paper);
+            y += 67;
+        }
+        text(ctx, `ENTER / SPACE  ${d.outro ? m.id === 'm5' ? 'THE END' : 'BACK TO THE BAY' : 'BEGIN JOB'}`, 43, 112 + dh - 15, 9, P.mango);
     }
     if (game.saveError) {
         text(ctx, 'STORAGE UNAVAILABLE · PROGRESS IS SESSION ONLY', w / 2, 86, 9, P.mango, 'center');

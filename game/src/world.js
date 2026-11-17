@@ -49,8 +49,11 @@ export function makeWorld(seed) {
                 addBuilding(x + 8, y + 16, 204, 164, 'warehouse', district, { label: 'COPPER / 09', wall: '#B6AAA0' });
                 continue;
             }
-            if (district === 'Glasswater' && (i + j) % 3 === 0) {
-                addBuilding(x + 12, y + 8, 196, 194, 'hotel', district, { label: rng.pick(['BAYVIEW', 'SOLANA', 'THE TIDELINE']), roof: P.roof });
+            if (i === 2 && j === 1) {
+                addBuilding(x + 12, y + 8, 196, 194, 'bank', district, { label: 'BAY TRUST', wall: P.mint, roof: P.roof });
+            }
+            else if (district === 'Glasswater' && (i + j) % 3 === 0) {
+                addBuilding(x + 12, y + 8, 196, 194, 'hotel', district, { label: i === 1 && j === 2 ? 'GLASSWATER HOTEL' : rng.pick(['BAYVIEW', 'SOLANA', 'THE TIDELINE']), roof: P.roof });
             }
             else if (district === 'Marlin Wharf') {
                 addBuilding(x + 8, y + 10, 204, rng.int(125, 174), 'warehouse', district, { label: rng.pick(['MARLIN STORAGE', 'BAY FREIGHT', 'NORTH PIER', 'DOCKSIDE']), wall: P.concrete });
