@@ -1,238 +1,320 @@
-import { PALETTE as P, TUNE, clamp, dist, angleDelta } from './config.js';
+// Neon Bay Nights — combat: Jax's pistol and fists, rival crew behaviour,
+// flying lead, and the cash a fallen rival leaves behind.
+//
+// The pistol is a short-range street tool, not a sniper rifle: a fast
+// tracer, a hard kick of muzzle flash, and a quarter-second between shots.
+// Rivals are cowards at heart — they hold their ground near home until
+// Jax gets close or gets loud, then they chase, swing, and shoot back.
+import { PALETTE as P, TUNE, clamp, angleDelta, dist } from './config.js';
 import { isSolid, lineClear, moveCircle } from './world.js';
 import { damageCar } from './vehicles.js';
 import { hurtPlayer } from './player.js';
-import { scarePeds } from './pedestrians.js';
 import { missionEvent } from './missions.js';
+
+const PISTOL_DAMAGE = 25;
+const PISTOL_SPEED = 780;
+const PISTOL_RANGE_SECONDS = 1.15;
+const FIST_DAMAGE = 25;
+const FIST_REACH = 34;
+const FIST_SWING_SECONDS = 0.35;
+const RIVAL_BOUNTY = 100;
+const OFFICER_BOUNTY = 50;
+const CHASE_SPEED = 88;
+const STROLL_SPEED = 30;
+const SIGHT_RANGE = 300;
+const SHOOT_MIN = 70;
+const SHOOT_MAX = 360;
+
+// Four Copper Kings loiter around their Marlin Wharf corners at the start
+// of every session, waiting for trouble to walk past.
 export function populateEnemies(game) {
-    game.enemies = game.world.gangSpawns.map((p, i) => ({
-        ...p, home: { ...p }, id: 500 + i, role: 'rival', hp: 70, maxHp: 70, h: Math.PI / 2, jacket: i % 2 ? '#AD7046' : '#B2673F', skin: '#8D5A3C', hair: P.ink, dead: false, armed: true, moving: false, flash: 0, cooldown: game.rng.range(.7, 1.8), aggro: 0, punch: 0
+    const corners = game.world.gangSpawns || [];
+    const jackets = ['#AD7046', '#B2673F', '#8A5A3B', '#C07A4E'];
+    game.enemies = corners.slice(0, 4).map((spot, i) => ({
+        id: 600 + i,
+        x: spot.x,
+        y: spot.y,
+        h: game.rng.range(0, Math.PI * 2),
+        hp: 70,
+        maxHp: 70,
+        dead: false,
+        role: 'rival',
+        home: { x: spot.x, y: spot.y },
+        jacket: jackets[i % jackets.length],
+        skin: '#8D5A3C',
+        hair: P.ink,
+        armed: true,
+        moving: false,
+        flash: 0,
+        punch: 0,
+        cooldown: game.rng.range(0.6, 2.2),
+        aggro: 0,
+        wanderT: game.rng.range(1, 4),
+        tx: spot.x,
+        ty: spot.y
     }));
-    game.cornerRewarded = false;
 }
-function fire(game, source, heading, faction) {
-    const car = source.car, start = car ? 21 : 13, x = source.x + Math.cos(heading) * start, y = source.y + Math.sin(heading) * start;
-    game.bullets.push({
-        x, y, px: x, py: y, vx: Math.cos(heading) * 780, vy: Math.sin(heading) * 780, life: .7, faction, source, damage: faction === 'player' ? 29 : 8
-    });
-    source.flash = .085;
-    source.fireHeading = heading;
-    game.audio.play(faction === 'player' ? 'shot' : 'enemyShot');
-    game.burst(x, y, 'shell', 1);
-    if (faction === 'player') {
-        scarePeds(game, x, y);
-        game.crime('gunfire', 1.1, source, true);
-        game.stats.shots++;
-        missionEvent(game, 'shoot', { x, y });
-    }
-}
-function killActor(game, a) {
-    if (a.dead) {
-        return;
-    }
-    a.dead = true;
-    a.deathTime = 0;
-    a.moving = false;
-    a.armed = false;
-    game.burst(a.x, a.y, 'dust', 5);
-    if (a.role === 'rival') {
-        game.stats.reputation += 100;
-        game.world.pickups.push({
-            x: a.x + 9, y: a.y, kind: 'cash', amount: 75, active: true, drop: true, phase: 0
-        }, {
-            x: a.x - 9, y: a.y, kind: 'ammo', active: true, drop: true, phase: 2
-        });
-        missionEvent(game, 'enemyDefeated', { enemy: a });
-    }
-    else if (a.role === 'officer') {
-        game.crime('officer down', 4, a, true);
-    }
-    else {
-        game.crime('assault', 2.6, a, true);
-    }
-}
+
 export function updateCombat(game, dt) {
     const p = game.player;
-    p.shotCooldown = Math.max(0, p.shotCooldown - dt);
-    p.punchCooldown = Math.max(0, p.punchCooldown - dt);
-    const shooting = game.input.down('Space') || game.input.mouse.down;
-    if (shooting) {
-        p.armed = true;
-        let heading = p.h;
-        if (game.input.mouse.aim) {
-            const target = game.screenToWorld(game.input.mouse.x, game.input.mouse.y);
-            heading = Math.atan2(target.y - p.y, target.x - p.x);
-            if (!p.car) {
-                p.h = heading;
-            }
-        }
-        if (p.shotCooldown === 0) {
-            p.shotCooldown = TUNE.shotInterval;
-            if (p.ammo > 0) {
-                p.ammo--;
-                fire(game, p, heading, 'player');
-            }
-            else {
-                game.audio.play('empty');
-                game.notify('OUT OF AMMO', 'Look for gold pickups or Dockside Supplies.', P.mango);
-                p.shotCooldown = .8;
-            }
+    p.shotCooldown = Math.max(0, (p.shotCooldown || 0) - dt);
+    p.punchCooldown = Math.max(0, (p.punchCooldown || 0) - dt);
+    handlePlayerAttack(game, dt);
+    stepBullets(game, dt);
+    stepRivals(game, dt);
+}
+
+// --- Jax's own attacks -----------------------------------------------------
+
+function aimAngle(game) {
+    const p = game.player;
+    if (game.input.mouse.aim && (game.input.mouse.down || p.armed)) {
+        const spot = game.screenToWorld(game.input.mouse.x, game.input.mouse.y);
+        return Math.atan2(spot.y - p.y, spot.x - p.x);
+    }
+    return p.h;
+}
+
+function handlePlayerAttack(game, dt) {
+    const p = game.player;
+    const wantShot = game.input.down('Space') || (game.input.mouse.aim && game.input.mouse.down);
+    if (wantShot && p.shotCooldown <= 0) firePistol(game);
+    if (game.input.tap('KeyF') && p.punchCooldown <= 0) swingFist(game);
+}
+
+function firePistol(game) {
+    const p = game.player;
+    if (p.ammo <= 0) {
+        p.shotCooldown = 0.3;
+        game.audio.play('empty');
+        return;
+    }
+    p.ammo -= 1;
+    p.shotCooldown = TUNE.shotInterval;
+    game.stats.shots += 1;
+    const angle = aimAngle(game);
+    const reach = p.car ? 26 : 20;
+    const mx = p.x + Math.cos(angle) * reach;
+    const my = p.y + Math.sin(angle) * reach;
+    p.flash = 0.09;
+    p.fireHeading = angle;
+    game.bullets.push({
+        x: mx, y: my,
+        vx: Math.cos(angle) * PISTOL_SPEED,
+        vy: Math.sin(angle) * PISTOL_SPEED,
+        faction: 'player',
+        damage: PISTOL_DAMAGE,
+        life: PISTOL_RANGE_SECONDS
+    });
+    game.burst(mx, my, 'spark', 2);
+    game.audio.play('shot');
+    game.crime('gunfire', 1.2, p, false);
+    missionEvent(game, 'shot', {});
+}
+
+function swingFist(game) {
+    const p = game.player;
+    p.punch = FIST_SWING_SECONDS;
+    p.punchCooldown = FIST_SWING_SECONDS;
+    game.audio.play('punch');
+    const victim = nearestFoe(game, p);
+    if (victim) {
+        hurtFoe(game, victim, FIST_DAMAGE, p);
+        return;
+    }
+    const bystander = game.peds.find(
+        ped => !ped.dead && dist(ped, p) < FIST_REACH &&
+            Math.abs(angleDelta(p.h, Math.atan2(ped.y - p.y, ped.x - p.x))) < 1.15
+    );
+    if (bystander) {
+        bystander.scared = 3;
+        bystander.fleeX = p.x;
+        bystander.fleeY = p.y;
+    }
+}
+
+function nearestFoe(game, p) {
+    let best = null;
+    let bestD = FIST_REACH;
+    for (const foe of [...game.enemies, ...game.police.officers]) {
+        if (foe.dead) continue;
+        const d = dist(foe, p);
+        const facing = Math.abs(angleDelta(p.h, Math.atan2(foe.y - p.y, foe.x - p.x)));
+        if (d < bestD && (facing < 1.15 || d < 20)) {
+            best = foe;
+            bestD = d;
         }
     }
-    if (game.input.tap('KeyF') && !p.car && p.punchCooldown === 0) {
-        p.punch = .18;
-        p.punchCooldown = .45;
-        p.armed = false;
-        game.audio.play('punch');
-        scarePeds(game, p.x, p.y, 95);
-        const targets = [...game.enemies, ...game.police.officers, ...game.peds];
-        for (const a of targets) {
-            if (!a.dead && dist(a, p) < 36 && Math.abs(angleDelta(p.h, Math.atan2(a.y - p.y, a.x - p.x))) < 1.4) {
-                a.hp -= 30;
-                a.aggro = 10;
-                a.scared = 6;
-                a.fleeX = p.x;
-                a.fleeY = p.y;
-                moveCircle(game.world, a, Math.cos(p.h) * 12, Math.sin(p.h) * 12, 7);
-                game.burst(a.x, a.y, 'spark', 3);
-                if (a.hp <= 0) {
-                    killActor(game, a);
-                }
-                game.crime('assault', .9, a, false);
-                break;
-            }
-        }
-        missionEvent(game, 'punch', {});
-    }
-    for (const e of game.enemies) {
-        e.flash = Math.max(0, e.flash - dt);
-        if (e.dead) {
+    return best;
+}
+
+// --- bullets in flight -----------------------------------------------------
+
+function stepBullets(game, dt) {
+    const p = game.player;
+    for (const b of game.bullets) {
+        b.x += b.vx * dt;
+        b.y += b.vy * dt;
+        b.life -= dt;
+        if (b.life <= 0 || b.x < 30 || b.y < 30 || b.x > game.world.width || b.y > game.world.height) {
+            b.spent = true;
             continue;
+        }
+        if (isSolid(game.world, b.x, b.y, 0)) {
+            game.burst(b.x, b.y, 'spark', 4);
+            b.spent = true;
+            continue;
+        }
+        if (b.faction === 'player') {
+            if (strikeTarget(game, b, game.enemies) || strikeTarget(game, b, game.police.officers)) continue;
+            if (strikePed(game, b)) continue;
+        } else if (!p.car && dist(b, p) < 11) {
+            hurtPlayer(game, b.damage);
+            game.burst(p.x, p.y, 'spark', 3);
+            b.spent = true;
+        } else if (p.car && dist(b, p) < 15) {
+            damageCar(game, p.car, 3);
+            game.burst(b.x, b.y, 'spark', 3);
+            b.spent = true;
+        }
+    }
+    game.bullets = game.bullets.filter(b => !b.spent);
+}
+
+function strikeTarget(game, b, list) {
+    for (const foe of list) {
+        if (foe.dead) continue;
+        if (dist(b, foe) < 14) {
+            hurtFoe(game, foe, b.damage, game.player);
+            game.burst(b.x, b.y, 'spark', 5);
+            b.spent = true;
+            return true;
+        }
+    }
+    return false;
+}
+
+function strikePed(game, b) {
+    for (const ped of game.peds) {
+        if (ped.dead) continue;
+        if (dist(b, ped) < 11) {
+            ped.dead = true;
+            ped.moving = false;
+            game.burst(b.x, b.y, 'spark', 4);
+            game.crime('hit and run', 1.6, ped, false);
+            b.spent = true;
+            return true;
+        }
+    }
+    return false;
+}
+
+// --- damage and death ------------------------------------------------------
+
+function hurtFoe(game, foe, amount, attacker) {
+    if (foe.dead) return;
+    foe.hp = Math.max(0, foe.hp - amount);
+    foe.flash = 0.12;
+    foe.aggro = 1;
+    if (foe.hp > 0) return;
+    foe.dead = true;
+    foe.moving = false;
+    foe.punch = 0;
+    if (foe.role === 'rival') {
+        game.stats.reputation += RIVAL_BOUNTY;
+        const amount = 60 + Math.floor(game.rng.range(0, 40));
+        game.world.pickups.push({
+            id: 5000 + game.world.pickups.length,
+            x: foe.x,
+            y: foe.y,
+            kind: 'cash',
+            amount,
+            active: true,
+            respawn: 99999,
+            drop: true,
+            phase: game.rng.range(0, 6)
+        });
+        game.floatText(foe.x, foe.y - 14, `+$${amount}`, P.mango);
+        missionEvent(game, 'rivalDown', { enemy: foe });
+    } else {
+        game.stats.reputation += OFFICER_BOUNTY;
+        game.crime('officer down', 2.5, foe, true);
+    }
+}
+
+// --- rival behaviour -------------------------------------------------------
+// A rival holds his corner, drifts around it, and only turns violent when
+// Jax comes into view or lands a hit. Up close he swings; at pistol range
+// he shoots; too far away and he wanders home.
+
+function stepRivals(game, dt) {
+    const p = game.player;
+    for (const e of game.enemies) {
+        if (e.dead) continue;
+        e.flash = Math.max(0, (e.flash || 0) - dt);
+        e.punch = Math.max(0, (e.punch || 0) - dt);
+        e.cooldown = Math.max(0, (e.cooldown || 0) - dt);
+        if (e.wanderT === undefined) {
+            e.wanderT = 2;
+            e.tx = e.home.x;
+            e.ty = e.home.y;
         }
         const d = dist(e, p);
-        e.aggro = Math.max(0, e.aggro - dt);
-        if ((d < 165 || e.aggro > 0) && d < 420 && lineClear(game.world, e, p)) {
-            e.h = Math.atan2(p.y - e.y, p.x - e.x);
-            e.aggro = 8;
-            e.cooldown -= dt;
-            if (d > 115) {
-                e.moving = true;
-                moveCircle(game.world, e, Math.cos(e.h) * 43 * dt, Math.sin(e.h) * 43 * dt, 7);
-            }
-            else {
-                e.moving = false;
-            }
-            if (e.cooldown <= 0 && d < 310) {
-                fire(game, e, e.h + game.rng.range(-.16, .16), 'rival');
-                e.cooldown = game.rng.range(.9, 1.6);
-            }
-        }
-        else {
-            e.moving = false;
-            e.h += Math.sin(game.time * .6 + e.id) * dt * .2;
-        }
-        if (p.car && !e.dead && dist(e, p.car) < 25 && Math.abs(p.car.speed) > 65) {
-            e.hp -= 120;
-            e.dead = true;
-            e.moving = false;
-            killActorAfterRam(game, e);
-            game.crime('ramming', 1.5, e, true);
-        }
-    }
-    if (game.enemies.length && !game.cornerRewarded && game.enemies.filter(e => !e.missionId).length > 0 && game.enemies.filter(e => !e.missionId).every(e => e.dead)) {
-        game.cornerRewarded = true;
-        p.cash += 250;
-        game.stats.earned += 250;
-        game.stats.reputation += 250;
-        game.audio.play('complete');
-        game.notify('COPPER KINGS SCATTERED', '+$250 · Dockside is quiet. For now.', P.mango);
-        game.save();
-    }
-    for (const o of game.police.officers) {
-        o.flash = Math.max(0, (o.flash || 0) - dt);
-        if (o.dead) {
+        if (d < SIGHT_RANGE && lineClear(game.world, e, p)) e.aggro = 1;
+        else if (d > 430) e.aggro = 0;
+        e.moving = false;
+        if (!e.aggro) {
+            strollHome(game, e, dt);
             continue;
         }
-        if (game.police.stars >= 3 && dist(o, p) > 80 && dist(o, p) < 300 && lineClear(game.world, o, p)) {
-            o.cooldown -= dt;
-            if (o.cooldown <= 0) {
-                fire(game, o, o.h + game.rng.range(-.21, .21), 'police');
-                o.cooldown = game.rng.range(1.2, 2.2);
-            }
+        e.h = Math.atan2(p.y - e.y, p.x - e.x);
+        if (d > 30) {
+            moveCircle(game.world, e, Math.cos(e.h) * CHASE_SPEED * dt, Math.sin(e.h) * CHASE_SPEED * dt, 7);
+            e.moving = true;
+        } else if (e.cooldown <= 0) {
+            e.punch = 0.3;
+            e.cooldown = 0.9;
+            hurtPlayer(game, 9);
+            game.audio.play('punch', 0.7);
+        }
+        if (e.armed && d > SHOOT_MIN && d < SHOOT_MAX && e.cooldown <= 0 && lineClear(game.world, e, p)) {
+            const angle = Math.atan2(p.y - e.y, p.x - e.x) + game.rng.range(-0.06, 0.06);
+            game.bullets.push({
+                x: e.x + Math.cos(angle) * 16,
+                y: e.y + Math.sin(angle) * 16,
+                vx: Math.cos(angle) * 620,
+                vy: Math.sin(angle) * 620,
+                faction: 'enemy',
+                damage: 8,
+                life: 1.1
+            });
+            e.flash = 0.08;
+            e.cooldown = 1.6 + game.rng.range(0, 0.9);
+            game.audio.play('enemyShot');
         }
     }
-    const live = [];
-    for (const b of game.bullets) {
-        b.life -= dt;
-        if (b.life <= 0) {
-            continue;
-        }
-        const ox = b.x, oy = b.y;
-        b.px = ox;
-        b.py = oy;
-        let hit = false;
-        const steps = Math.ceil(Math.hypot(b.vx, b.vy) * dt / 5);
-        for (let i = 0; i < steps && !hit; i++) {
-            b.x += b.vx * dt / steps;
-            b.y += b.vy * dt / steps;
-            if (isSolid(game.world, b.x, b.y, 0)) {
-                game.burst(b.x, b.y, 'spark', 3);
-                hit = true;
-                break;
-            }
-            for (const c of game.cars) {
-                if (c === b.source.car) {
-                    continue;
-                }
-                if (Math.hypot(c.x - b.x, c.y - b.y) < 19) {
-                    damageCar(game, c, b.damage * .48);
-                    if (c === p.car && b.faction !== 'player') {
-                        hurtPlayer(game, 3);
-                    }
-                    game.burst(b.x, b.y, 'spark', 3);
-                    hit = true;
-                    break;
-                }
-            }
-            if (hit) {
-                break;
-            }
-            const targets = b.faction === 'player' ? [...game.enemies, ...game.police.officers, ...game.peds] : p.car ? [] : [p];
-            for (const a of targets) {
-                if (a.dead || Math.hypot(a.x - b.x, a.y - b.y) > 10) {
-                    continue;
-                }
-                if (a === p) {
-                    hurtPlayer(game, b.damage);
-                }
-                else {
-                    a.hp -= b.damage;
-                    a.aggro = 12;
-                    a.scared = 5;
-                    a.fleeX = ox;
-                    a.fleeY = oy;
-                    if (a.hp <= 0) {
-                        killActor(game, a);
-                    }
-                    else if (a.role === 'civilian') {
-                        game.crime('assault', 1.7, a, true);
-                    }
-                }
-                game.burst(b.x, b.y, 'spark', 4);
-                hit = true;
-                break;
-            }
-        }
-        if (!hit) {
-            live.push(b);
-        }
+}
+
+function strollHome(game, e, dt) {
+    const homeD = dist(e, e.home);
+    if (homeD > 60) {
+        const angle = Math.atan2(e.home.y - e.y, e.home.x - e.x);
+        e.h = angle;
+        moveCircle(game.world, e, Math.cos(angle) * 42 * dt, Math.sin(angle) * 42 * dt, 7);
+        e.moving = true;
+        return;
     }
-    game.bullets = live;
-}
-function killActorAfterRam(game, e) {
-    e.dead = false;
-    killActor(game, e);
-}
-export function shootOfficer(game, o, heading) {
-    fire(game, o, heading, 'police');
+    e.wanderT -= dt;
+    if (e.wanderT <= 0) {
+        e.wanderT = game.rng.range(2, 5);
+        e.tx = clamp(e.home.x + game.rng.range(-90, 90), 60, game.world.width - 60);
+        e.ty = clamp(e.home.y + game.rng.range(-90, 90), 60, game.world.height - 60);
+    }
+    const d = Math.hypot(e.tx - e.x, e.ty - e.y);
+    if (d > 12) {
+        const angle = Math.atan2(e.ty - e.y, e.tx - e.x);
+        e.h = angle;
+        moveCircle(game.world, e, Math.cos(angle) * STROLL_SPEED * dt, Math.sin(angle) * STROLL_SPEED * dt, 7);
+        e.moving = true;
+    }
 }

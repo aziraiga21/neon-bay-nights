@@ -1,150 +1,254 @@
-import { PALETTE as P, SKINS, HAIR, clamp, angleDelta, dist } from './config.js';
-import { moveCircle, nearestNode, signalGreen, isSolid } from './world.js';
-const COATS = [P.carCoral, P.mango, P.teal, P.navy, P.carMint, '#AA6B98', '#E2CBB0', '#688D98'];
-let pid = 1;
-function corner(world, x, y) {
-    const n = nearestNode(world, x, y);
-    return { node: n.id, sx: x < n.x ? -1 : 1, sy: y < n.y ? -1 : 1 };
+// Neon Bay Nights — pedestrians: the people who make the sidewalks feel
+// alive. Everyone walks the road graph on one side of the street or the
+// other, the way real foot traffic does: along a block, across at the
+// crosswalk when they feel like it, never through a building. A speeding
+// car, a shove, or a gunshot turns a stroll into a sprint for cover.
+import { PALETTE as P, SKINS, HAIR, clamp } from './config.js';
+import { nearestNode, moveCircle } from './world.js';
+
+const MAX_PEDS = 130;
+const WALK_MIN = 34;
+const WALK_MAX = 58;
+const FLEE_SPEED = 150;
+const SIDEWALK = 66;
+const JACKETS = ['#0E7C86', '#C46B4A', '#7C9F87', '#E7746F', '#F0B429', '#243056', '#B7E4C7', '#E7E1D6'];
+const TROUSERS = ['#2C3138', '#5A4A3A', '#3A4A5A', '#6B5A4A'];
+
+// --- construction ----------------------------------------------------------
+
+// Snap a fresh walker onto the nearest road segment, keeping whatever
+// sidewalk side their starting point already sits on.
+function snapToGraph(game, ped) {
+    const world = game.world;
+    const node = nearestNode(world, ped.x, ped.y);
+    const link = node.links[Math.floor(game.rng() * node.links.length)];
+    const target = world.nodes[link];
+    const dx = target.x - node.x;
+    const dy = target.y - node.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const along = clamp(((ped.x - node.x) * dx + (ped.y - node.y) * dy) / (len * len), 0, 1);
+    const px = node.x + dx * along;
+    const py = node.y + dy * along;
+    const side = (ped.x - px) * (-dy / len) + (ped.y - py) * (dx / len) >= 0 ? 1 : -1;
+    ped.from = node.id;
+    ped.to = link;
+    ped.t = along;
+    ped.side = side;
+    const spot = graphPoint(world, ped);
+    ped.x = spot.x;
+    ped.y = spot.y;
+    ped.h = Math.atan2(dy, dx);
+    return ped;
 }
-function position(world, c) {
-    const n = world.nodes[c.node];
-    return { x: n.x + c.sx * 66, y: n.y + c.sy * 66 };
-}
-function nextTarget(game, p) {
-    const at = p.corner, n = game.world.nodes[at.node], choices = [{ ...at, sx: -at.sx, cross: 'x' }, { ...at, sy: -at.sy, cross: 'y' }];
-    const horiz = n.links.map(id => game.world.nodes[id]).find(v => v.j === n.j && Math.sign(v.x - n.x) === at.sx);
-    const vert = n.links.map(id => game.world.nodes[id]).find(v => v.i === n.i && Math.sign(v.y - n.y) === at.sy);
-    if (horiz) {
-        choices.push({ node: horiz.id, sx: -at.sx, sy: at.sy });
-    }
-    if (vert) {
-        choices.push({ node: vert.id, sx: at.sx, sy: -at.sy });
-    }
-    const target = game.rng.pick(choices);
-    p.target = { ...position(game.world, target), corner: target, cross: target.cross };
-}
-export function addPed(game, x, y, flee = false) {
-    const p = {
-        id: pid++, x, y, h: game.rng.range(0, 6.28), jacket: game.rng.pick(COATS), skin: game.rng.pick(SKINS), hair: game.rng.pick(HAIR), hp: 40, dead: false, deathTime: 0, speed: game.rng.range(25, 43), moving: true, scared: flee ? 5 : 0, fleeX: x - 30, fleeY: y - 30, corner: corner(game.world, x, y), target: null, role: 'civilian'
+
+function graphPoint(world, ped) {
+    const from = world.nodes[ped.from];
+    const to = world.nodes[ped.to];
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const len = Math.hypot(dx, dy) || 1;
+    return {
+        x: from.x + dx * ped.t + (-dy / len) * SIDEWALK * ped.side,
+        y: from.y + dy * ped.t + (dx / len) * SIDEWALK * ped.side
     };
-    const pos = position(game.world, p.corner);
-    if (!flee) {
-        p.x = pos.x + game.rng.range(-7, 7);
-        p.y = pos.y + game.rng.range(-7, 7);
-        nextTarget(game, p);
-    }
-    else {
-        p.target = pos;
-    }
-    game.peds.push(p);
-    return p;
 }
+
+function dress(game) {
+    return {
+        skin: game.rng.pick(SKINS),
+        hair: game.rng.pick(HAIR),
+        jacket: game.rng.pick(JACKETS),
+        trousers: game.rng.pick(TROUSERS)
+    };
+}
+
+export function addPed(game, x, y, flee = false) {
+    if (game.peds.length >= MAX_PEDS) return null;
+    const ped = {
+        id: 2000 + game.peds.length,
+        x, y, h: 0,
+        ...dress(game),
+        speed: game.rng.range(WALK_MIN, WALK_MAX),
+        moving: true,
+        scared: flee ? 2.5 : 0,
+        fleeX: game.player.x,
+        fleeY: game.player.y,
+        dead: false,
+        deadTime: 0,
+        flash: 0,
+        wait: 0,
+        crossing: null,
+        from: 0, to: 1, t: 0, side: 1
+    };
+    snapToGraph(game, ped);
+    game.peds.push(ped);
+    return ped;
+}
+
+// Sixty-four walkers scattered across the grid, so every district has
+// foot traffic from the first frame.
 export function populatePeds(game) {
-    pid = 1;
     game.peds = [];
-    for (let i = 0; i < 100; i++) {
-        const n = game.rng.pick(game.world.nodes);
-        addPed(game, n.x + game.rng.pick([-1, 1]) * 66, n.y + game.rng.pick([-1, 1]) * 66);
+    for (let i = 0; i < 64; i++) {
+        const node = game.rng.pick(game.world.nodes);
+        const link = game.rng.pick(node.links);
+        const target = game.world.nodes[link];
+        const t = game.rng.range(0.05, 0.95);
+        const dx = target.x - node.x;
+        const dy = target.y - node.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const side = game.rng() < 0.5 ? -1 : 1;
+        addPed(
+            game,
+            node.x + dx * t + (-dy / len) * SIDEWALK * side,
+            node.y + dy * t + (dx / len) * SIDEWALK * side
+        );
     }
 }
-export function scarePeds(game, x, y, radius = 260) {
-    for (const p of game.peds) {
-        if (!p.dead && Math.hypot(p.x - x, p.y - y) < radius) {
-            p.scared = game.rng.range(3, 6);
-            p.fleeX = x;
-            p.fleeY = y;
-        }
-    }
-}
+
+// --- per-frame update ------------------------------------------------------
+
 export function updatePeds(game, dt) {
-    for (const p of game.peds) {
-        if (p.dead) {
-            p.deathTime += dt;
-            if (p.deathTime > 28 && dist(p, game.player) > 550) {
-                const c = corner(game.world, p.x, p.y);
-                Object.assign(p, position(game.world, c), {
-                    corner: c, dead: false, hp: 40, scared: 0
-                });
-                nextTarget(game, p);
-            }
+    for (const ped of game.peds) {
+        if (ped.dead) {
+            ped.deadTime += dt;
             continue;
         }
-        p.scared = Math.max(0, p.scared - dt);
-        p.flash = Math.max(0, (p.flash || 0) - dt);
-        for (const c of game.cars) {
-            const d = dist(c, p);
-            if (Math.abs(c.speed) > 70 && d < 110) {
-                const dx = p.x - c.x, dy = p.y - c.y;
-                if (dx * Math.cos(c.h) + dy * Math.sin(c.h) > 0 && Math.abs(dx * Math.sin(c.h) - dy * Math.cos(c.h)) < 30) {
-                    p.scared = Math.max(p.scared, 1.1);
-                    p.fleeX = c.x;
-                    p.fleeY = c.y;
-                }
-            }
-            if (d < 19 && Math.abs(c.speed) > 55) {
-                p.hp -= Math.abs(c.speed) * .7;
-                c.speed *= .87;
-                game.burst(p.x, p.y, 'dust', 5);
-                p.scared = 4;
-                p.fleeX = c.x;
-                p.fleeY = c.y;
-                if (c === game.player.car) {
-                    game.crime('hit and run', 2.8, p, true);
-                    game.audio.play('crash', .35);
-                    game.shake = 4;
-                }
-                if (p.hp <= 0) {
-                    p.dead = true;
-                    p.moving = false;
-                    p.deathTime = 0;
-                }
-            }
-        }
-        if (p.dead) {
+        ped.flash = Math.max(0, (ped.flash || 0) - dt);
+        if (ped.scared <= 0) noticeDanger(game, ped);
+        if (ped.scared > 0) {
+            runAway(game, ped, dt);
             continue;
         }
-        let tx, ty, speed = p.speed;
-        if (p.scared > 0) {
-            let a = Math.atan2(p.y - p.fleeY, p.x - p.fleeX);
-            tx = p.x + Math.cos(a) * 50;
-            ty = p.y + Math.sin(a) * 50;
-            speed = 105;
-            if (isSolid(game.world, tx, ty, 8)) {
-                a += Math.PI / 2;
-                tx = p.x + Math.cos(a) * 45;
-                ty = p.y + Math.sin(a) * 45;
-            }
-            p.returning = true;
+        if (ped.wait > 0) {
+            ped.wait -= dt;
+            ped.moving = false;
+            continue;
         }
-        else {
-            if (p.returning) {
-                p.corner = corner(game.world, p.x, p.y);
-                p.target = { ...position(game.world, p.corner), corner: p.corner };
-                p.returning = false;
-            }
-            if (!p.target) {
-                nextTarget(game, p);
-            }
-            if (dist(p, p.target) < 7) {
-                p.corner = p.target.corner || corner(game.world, p.x, p.y);
-                nextTarget(game, p);
-            }
-            if (p.target.cross && dist(p, p.target) > 103) {
-                const n = game.world.nodes[p.corner.node];
-                if (!signalGreen(game.time, n, p.target.cross === 'x')) {
-                    p.moving = false;
-                    continue;
-                }
-            }
-            tx = p.target.x;
-            ty = p.target.y;
+        if (ped.crossing) {
+            crossStreet(game, ped, dt);
+            continue;
         }
-        const a = Math.atan2(ty - p.y, tx - p.x);
-        p.h += angleDelta(p.h, a) * Math.min(1, dt * 9);
-        p.moving = true;
-        moveCircle(game.world, p, Math.cos(a) * speed * dt, Math.sin(a) * speed * dt, 6);
+        stroll(game, ped, dt);
     }
-    if (game.peds.length > 130) {
-        game.peds = game.peds.sort((a, b) => dist(a, game.player) - dist(b, game.player)).slice(0, 130);
+    if (game.peds.some(p => p.dead && p.deadTime > 25)) {
+        game.peds = game.peds.filter(p => !p.dead || p.deadTime <= 25);
     }
+}
+
+// A fast car bearing down on a walker — or Jax's car, if he is the one
+// speeding — sends them running.
+function noticeDanger(game, ped) {
+    for (const car of game.cars) {
+        if (car.wreck) continue;
+        const d = Math.hypot(car.x - ped.x, car.y - ped.y);
+        if (d < 46 && Math.abs(car.speed) > 55) {
+            ped.scared = 2;
+            ped.fleeX = car.x;
+            ped.fleeY = car.y;
+            return;
+        }
+    }
+    const p = game.player;
+    if (p.car) {
+        const d = Math.hypot(p.x - ped.x, p.y - ped.y);
+        if (d < 46 && Math.abs(p.car.speed) > 55) {
+            ped.scared = 2;
+            ped.fleeX = p.x;
+            ped.fleeY = p.y;
+        }
+    }
+}
+
+function runAway(game, ped, dt) {
+    ped.scared -= dt;
+    const angle = Math.atan2(ped.y - ped.fleeY, ped.x - ped.fleeX);
+    ped.h = angle;
+    ped.moving = true;
+    moveCircle(game.world, ped, Math.cos(angle) * FLEE_SPEED * dt, Math.sin(angle) * FLEE_SPEED * dt, 7);
+    if (ped.scared <= 0) {
+        ped.scared = 0;
+        snapToGraph(game, ped);
+    }
+}
+
+// Crossing the street at the junction: a straight walk from one sidewalk
+// to the other, so the move reads as a crosswalk crossing.
+function crossStreet(game, ped, dt) {
+    const c = ped.crossing;
+    c.k += dt / 1.1;
+    ped.moving = true;
+    if (c.k >= 1) {
+        ped.x = c.tx;
+        ped.y = c.ty;
+        ped.side = -ped.side;
+        ped.crossing = null;
+        pickNextLeg(game, ped);
+        return;
+    }
+    ped.x = c.fx + (c.tx - c.fx) * c.k;
+    ped.y = c.fy + (c.ty - c.fy) * c.k;
+    ped.h = Math.atan2(c.ty - c.fy, c.tx - c.fx);
+}
+
+// Walk the current block. At the junction, usually carry on down a new
+// street, sometimes stop to look around, sometimes cross over.
+function stroll(game, ped, dt) {
+    const world = game.world;
+    const from = world.nodes[ped.from];
+    const to = world.nodes[ped.to];
+    const len = Math.hypot(to.x - from.x, to.y - from.y) || 1;
+    ped.t += (ped.speed * dt) / len;
+    if (ped.t >= 1) {
+        ped.t = 1;
+        const spot = graphPoint(world, ped);
+        ped.x = spot.x;
+        ped.y = spot.y;
+        arriveAtJunction(game, ped);
+        return;
+    }
+    const spot = graphPoint(world, ped);
+    ped.h = Math.atan2(to.y - from.y, to.x - from.x);
+    ped.x = spot.x;
+    ped.y = spot.y;
+    ped.moving = true;
+}
+
+function arriveAtJunction(game, ped) {
+    const roll = game.rng();
+    if (roll < 0.15) {
+        ped.wait = game.rng.range(1, 3);
+        ped.moving = false;
+        pickNextLeg(game, ped, true);
+        return;
+    }
+    if (roll < 0.42) {
+        const world = game.world;
+        const node = world.nodes[ped.to];
+        const from = world.nodes[ped.from];
+        const dx = node.x - from.x;
+        const dy = node.y - from.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const ox = (-dy / len) * SIDEWALK * ped.side;
+        const oy = (dx / len) * SIDEWALK * ped.side;
+        ped.crossing = {
+            fx: node.x + ox, fy: node.y + oy,
+            tx: node.x - ox, ty: node.y - oy,
+            k: 0
+        };
+        return;
+    }
+    pickNextLeg(game, ped);
+}
+
+function pickNextLeg(game, ped, stay = false) {
+    const world = game.world;
+    const node = world.nodes[ped.to];
+    const options = node.links.filter(id => id !== ped.from);
+    const next = options.length && !stay
+        ? options[Math.floor(game.rng() * options.length)]
+        : game.rng.pick(node.links);
+    ped.from = ped.to;
+    ped.to = next;
+    ped.t = 0;
 }
