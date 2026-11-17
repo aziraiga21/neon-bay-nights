@@ -1,11 +1,14 @@
-// Neon Bay Nights — procedural artwork.
-// Every sprite, rooftop and road marking is drawn from code at boot: no image
-// assets, no network. The ground canvas is painted once per world (day + dusk
-// variants); buildings, cars, people and props are drawn live each frame.
+// Neon Bay Nights — every visual is painted by code at runtime.
+// No image files, no downloads: the city ground is baked once per world
+// (a daylight sheet and a dusk sheet), while buildings, cars, people and
+// street props are drawn live every frame from the same palette.
 import { PALETTE as P, CARS, ROADS_X, ROADS_Y } from './config.js';
 import { createRandom } from './random.js';
 
-// Rounded rectangle with an optional fill and an optional 1px outline.
+// --- tiny drawing verbs ----------------------------------------------------
+// These four are the shared vocabulary for hud.js and render.js as well,
+// so their names and signatures stay exactly as they are.
+
 export function round(ctx, x, y, w, h, r, fill, stroke) {
     ctx.beginPath();
     ctx.roundRect(x, y, w, h, r);
@@ -20,10 +23,12 @@ export function round(ctx, x, y, w, h, r, fill, stroke) {
     }
 }
 
-// Closed polyline; fills and/or strokes with whatever style is current.
 export function polygon(ctx, points, fill, stroke) {
     ctx.beginPath();
-    points.forEach(([px, py], i) => (i ? ctx.lineTo(px, py) : ctx.moveTo(px, py)));
+    points.forEach(([px, py], i) => {
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+    });
     ctx.closePath();
     if (fill) {
         ctx.fillStyle = fill;
@@ -43,16 +48,37 @@ export function ellipse(ctx, x, y, rx, ry, color) {
 }
 
 export function text(ctx, str, x, y, size, color, align = 'left', weight = 'bold') {
-    ctx.font = `${weight} ${size}px Arial, Helvetica, sans-serif`;
+    ctx.font = weight + ' ' + size + 'px Arial, Helvetica, sans-serif';
     ctx.textAlign = align;
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = color;
     ctx.fillText(str, x, y);
 }
 
-// ---------------------------------------------------------------------------
-// Ground canvas: one static painting of the whole city, drawn once.
-// ---------------------------------------------------------------------------
+// Small local helpers for the ground painter below.
+function dashLine(ctx, x1, y1, x2, y2, style, dash) {
+    ctx.strokeStyle = style;
+    ctx.setLineDash(dash || []);
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+}
+
+function speckle(ctx, rng, count, pickSpot, shades) {
+    for (let n = 0; n < count; n++) {
+        const [px, py, w, h] = pickSpot(n);
+        ctx.fillStyle = shades[n % shades.length];
+        ctx.fillRect(px, py, w, h);
+    }
+}
+
+// --- the static ground sheet -----------------------------------------------
+// One big canvas holding land, lots, parks, roads, lane paint, crossings,
+// street names, the seawall, the beach and the jetties. Dusk swaps the
+// asphalt and sidewalk tones; everything else is painted identically.
+
 export function makeGround(world, dusk = false) {
     const asphalt = dusk ? P.asphaltDusk : P.asphalt;
     const walk = dusk ? P.sidewalkDusk : P.sidewalk;
@@ -62,20 +88,18 @@ export function makeGround(world, dusk = false) {
     const ctx = sheet.getContext('2d');
     const rng = createRandom(world.seed + 41);
 
-    // Base land: pale scrub east of the bay line, then the sidewalk field
-    // the whole street grid sits on.
+    // Scrub west of the bay line, then the sidewalk field the grid sits on.
     ctx.fillStyle = '#B3BEA7';
     ctx.fillRect(0, 0, world.water, sheet.height);
     ctx.fillStyle = walk;
     ctx.fillRect(70, 70, 2700, 2700);
 
-    // Parcel paving between the roads; the checker of warm tones reads as
-    // courtyards and planted lots through the gaps between buildings.
+    // Block paving: alternating warm tones read as courtyards between houses.
     for (let j = 0; j < 6; j++) {
         for (let i = 0; i < 6; i++) {
             const px = ROADS_X[i] + 76;
             const py = ROADS_Y[j] + 76;
-            ctx.fillStyle = j >= 4 ? '#B8B6A7' : (i + j) % 2 ? '#D8C6AE' : '#C8C9B2';
+            ctx.fillStyle = j >= 4 ? '#B8B6A7' : ((i + j) % 2 ? '#D8C6AE' : '#C8C9B2');
             ctx.fillRect(px, py, 232, 232);
             ctx.strokeStyle = '#A7AB9880';
             ctx.lineWidth = 1;
@@ -83,7 +107,7 @@ export function makeGround(world, dusk = false) {
         }
     }
 
-    // Parks: lawn, a crossing path, a round pond and scattered petals.
+    // Parks: lawn slab, crossing paths, a round pond, scattered petals.
     for (const park of world.parks) {
         round(ctx, park.x - 5, park.y - 5, park.w + 10, park.h + 10, 9, P.grass);
         ctx.fillStyle = walk;
@@ -102,7 +126,7 @@ export function makeGround(world, dusk = false) {
         }
     }
 
-    // Roads: a pale curb lip framing each asphalt strip, vertical then horizontal.
+    // Roads: pale curb lip framing each asphalt strip, vertical then horizontal.
     for (const x of ROADS_X) {
         ctx.fillStyle = P.curb;
         ctx.fillRect(x - 55, 120, 110, 2540);
@@ -116,7 +140,7 @@ export function makeGround(world, dusk = false) {
         ctx.fillRect(116, y - 52, 2548, 104);
     }
 
-    // Sidewalk expansion seams, short ticks on both sides of every road.
+    // Expansion seams: short ticks on both sides of every road.
     ctx.lineWidth = 1;
     ctx.strokeStyle = '#B7A78F66';
     for (const x of ROADS_X) {
@@ -140,60 +164,35 @@ export function makeGround(world, dusk = false) {
         }
     }
 
-    // Seeded asphalt patchwork: faint dark and light scuffs along the roads.
-    for (let n = 0; n < 1400; n++) {
+    // Seeded asphalt scuffs: faint dark and light patches along the roads.
+    speckle(ctx, rng, 1400, n => {
         const vertical = rng() < 0.5;
         const px = vertical ? rng.pick(ROADS_X) + rng.range(-48, 48) : rng.range(120, 2660);
         const py = vertical ? rng.range(120, 2660) : rng.pick(ROADS_Y) + rng.range(-48, 48);
-        ctx.fillStyle = n % 4 === 0 ? '#72747A40' : '#424B5030';
-        ctx.fillRect(px, py, rng.range(1, 12), rng.range(1, 5));
-    }
+        return [px, py, rng.range(1, 12), rng.range(1, 5)];
+    }, ['#72747A40', '#424B5030', '#424B5030', '#424B5030']);
 
     // Lane paint: dashed yellow centre line with pale edge lines, stopping
-    // short of each intersection so the junctions stay readable.
+    // short of each junction so the intersections stay readable.
     ctx.lineWidth = 1;
     for (const x of ROADS_X) {
         for (let j = 0; j < 6; j++) {
             const top = ROADS_Y[j] + 65;
             const bottom = ROADS_Y[j + 1] - 65;
-            ctx.strokeStyle = P.yellow;
-            ctx.setLineDash([17, 17]);
-            ctx.beginPath();
-            ctx.moveTo(x, top);
-            ctx.lineTo(x, bottom);
-            ctx.stroke();
-            ctx.setLineDash([]);
-            ctx.strokeStyle = '#E8E4D882';
-            for (const s of [-1, 1]) {
-                ctx.beginPath();
-                ctx.moveTo(x + s * 45, top);
-                ctx.lineTo(x + s * 45, bottom);
-                ctx.stroke();
-            }
+            dashLine(ctx, x, top, x, bottom, P.yellow, [17, 17]);
+            for (const s of [-1, 1]) dashLine(ctx, x + s * 45, top, x + s * 45, bottom, '#E8E4D882');
         }
     }
     for (const y of ROADS_Y) {
         for (let i = 0; i < 6; i++) {
             const left = ROADS_X[i] + 65;
             const right = ROADS_X[i + 1] - 65;
-            ctx.strokeStyle = P.yellow;
-            ctx.setLineDash([17, 17]);
-            ctx.beginPath();
-            ctx.moveTo(left, y);
-            ctx.lineTo(right, y);
-            ctx.stroke();
-            ctx.setLineDash([]);
-            ctx.strokeStyle = '#E8E4D882';
-            for (const s of [-1, 1]) {
-                ctx.beginPath();
-                ctx.moveTo(left, y + s * 45);
-                ctx.lineTo(right, y + s * 45);
-                ctx.stroke();
-            }
+            dashLine(ctx, left, y, right, y, P.yellow, [17, 17]);
+            for (const s of [-1, 1]) dashLine(ctx, left, y + s * 45, right, y + s * 45, '#E8E4D882');
         }
     }
 
-    // Intersections: fresh asphalt, zebra bars on all four sides, a drain
+    // Junctions: fresh asphalt, zebra bars on all four sides, a drain
     // grate and a faint centre box.
     for (const node of world.nodes) {
         ctx.fillStyle = asphalt;
@@ -206,24 +205,20 @@ export function makeGround(world, dusk = false) {
             ctx.fillRect(node.x + 53, node.y + k, 17, 7);
         }
         ctx.fillStyle = '#414D52';
-        for (const s of [-1, 1]) {
-            ctx.fillRect(node.x + s * 43 - 5, node.y + 64, 11, 5);
-        }
+        for (const s of [-1, 1]) ctx.fillRect(node.x + s * 43 - 5, node.y + 64, 11, 5);
         ctx.strokeStyle = '#B8C2B433';
         ctx.lineWidth = 1;
         ctx.strokeRect(node.x - 14, node.y - 14, 28, 28);
     }
 
-    // A few painted street names on the asphalt, one per named avenue.
+    // Painted street names on the asphalt, one per named avenue.
     for (const y of [640, 1408, 2176]) {
         const name = y === 1408 ? 'OCEAN DRIVE' : y === 640 ? 'SOLANA AVE' : 'MARLIN WAY';
-        for (const x of [810, 1570, 2330]) {
-            text(ctx, name, x, y + 40, 8, '#E8E4D884', 'center');
-        }
+        for (const x of [810, 1570, 2330]) text(ctx, name, x, y + 40, 8, '#E8E4D884', 'center');
     }
 
-    // The coast: seawall, promenade boards, warm sand and the bay itself is
-    // filled by the renderer; here the sand and the two timber jetties live.
+    // The coast: seawall, promenade boards and warm sand. The bay water
+    // itself is painted by the renderer; the sand and timber jetties live here.
     ctx.fillStyle = P.seawall;
     ctx.fillRect(world.coast - 13, 60, 24, 2760);
     ctx.fillStyle = P.sand;
@@ -259,9 +254,7 @@ export function makeGround(world, dusk = false) {
             ctx.stroke();
         }
         for (let x = 2875; x < 3207; x += 50) {
-            for (const sy of [0, 40]) {
-                ellipse(ctx, x, y + sy, 4, 4, P.wood);
-            }
+            for (const sy of [0, 40]) ellipse(ctx, x, y + sy, 4, 4, P.wood);
         }
     }
     return sheet;
@@ -273,20 +266,20 @@ export function drawBuildingShadow(ctx, b, dusk) {
     ctx.fillRect(b.x + 5 + dusk * 5, b.y + 6 + dusk, b.w, b.h + 7);
 }
 
-// ---------------------------------------------------------------------------
-// Buildings: a shallow south facade under a roof cap reads as height from
-// above. Hotels get glass + pool, the diner gets its awning and sign, and
-// warehouses get corrugated siding; everything else gets an AC unit.
-// ---------------------------------------------------------------------------
-function paintRoofAndFacade(ctx, b, glass, industrial) {
+// --- buildings -------------------------------------------------------------
+// A shallow south facade under a roof cap reads as height from above.
+// Hotels get glass + pool, the diner its awning and sign, warehouses
+// corrugated siding; everything else gets an AC unit and a shop front.
+
+function shellAndRoof(ctx, b, glass, industrial) {
     const { x, y, w, h } = b;
     round(ctx, x, y + 10, w, h, 2, b.wall);
     ctx.fillStyle = glass ? P.glassDeep : b.wall;
     ctx.fillRect(x, y + h - 18, w, 30);
     ctx.fillStyle = '#635C6230';
     ctx.fillRect(x, y + h - 14, w, 26);
-    const roofColor = glass ? P.roof : industrial ? P.corrugated : b.roof;
-    round(ctx, x, y, w, h - 10, 3, roofColor);
+    const cap = glass ? P.roof : industrial ? P.corrugated : b.roof;
+    round(ctx, x, y, w, h - 10, 3, cap);
     ctx.fillStyle = '#F6F1E75C';
     ctx.fillRect(x + 1, y + 1, w - 2, 3);
     ctx.fillRect(x + 1, y + 1, 3, h - 14);
@@ -312,7 +305,7 @@ function paintRoofAndFacade(ctx, b, glass, industrial) {
     }
 }
 
-function paintHotelFront(ctx, b) {
+function hotelFace(ctx, b) {
     const { x, y, w, h } = b;
     ctx.fillStyle = P.glass;
     ctx.fillRect(x + 8, y + 8, w - 16, 21);
@@ -339,7 +332,7 @@ function paintHotelFront(ctx, b) {
     }
 }
 
-function paintDinerFront(ctx, b) {
+function dinerFace(ctx, b) {
     const { x, y, w, h } = b;
     round(ctx, x + 17, y + 14, w - 34, h - 46, 6, '#1C7580');
     ctx.strokeStyle = '#69C6C0';
@@ -360,7 +353,7 @@ function paintDinerFront(ctx, b) {
     }
 }
 
-function paintShopFront(ctx, b) {
+function shopFace(ctx, b) {
     const { x, y, w } = b;
     const ax = x + w - 36;
     const ay = y + 19;
@@ -388,10 +381,10 @@ export function drawBuilding(ctx, b, dusk = 0) {
     const { x, y, w, h } = b;
     const glass = b.kind === 'hotel';
     const industrial = b.kind === 'warehouse' || b.kind === 'garage';
-    paintRoofAndFacade(ctx, b, glass, industrial);
-    if (glass) paintHotelFront(ctx, b);
-    else if (b.kind === 'diner') paintDinerFront(ctx, b);
-    else paintShopFront(ctx, b);
+    shellAndRoof(ctx, b, glass, industrial);
+    if (glass) hotelFace(ctx, b);
+    else if (b.kind === 'diner') dinerFace(ctx, b);
+    else shopFace(ctx, b);
 
     // South-facing windows; at dusk some of them glow warm.
     const nwin = Math.max(2, Math.floor(w / 28));
@@ -438,11 +431,11 @@ export function drawBuilding(ctx, b, dusk = 0) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Cars: drawn facing east, then rotated to the car's heading. Tires poke out
+// --- cars ------------------------------------------------------------------
+// Drawn facing east, then rotated to the car's heading. Tires poke out
 // past the body outline; vans get a cargo box, sports cars a dark nose
 // stripe, taxis a roof sign, police a stripe plus flashing light bar.
-// ---------------------------------------------------------------------------
+
 export function drawCarShadow(ctx, c, dusk) {
     const def = CARS[c.type];
     ctx.save();
@@ -452,12 +445,10 @@ export function drawCarShadow(ctx, c, dusk) {
     ctx.restore();
 }
 
-function paintCarBody(ctx, c, def, l, w) {
+function carWheelsAndShell(ctx, c, l, w) {
     const body = c.wreck ? '#6A655F' : c.color;
     for (const x of [-l * 0.31, l * 0.29]) {
-        for (const y of [-w / 2 - 1, w / 2 - 2]) {
-            round(ctx, x - 4, y, 9, 4, 1, P.tire);
-        }
+        for (const y of [-w / 2 - 1, w / 2 - 2]) round(ctx, x - 4, y, 9, 4, 1, P.tire);
     }
     round(ctx, -l / 2, -w / 2, l, w, 5, body, P.ink);
     ctx.save();
@@ -472,7 +463,7 @@ function paintCarBody(ctx, c, def, l, w) {
     return body;
 }
 
-function paintCarCabin(ctx, c, body, l, w) {
+function carGlasswork(ctx, c, body, l, w) {
     if (c.type === 'van' || c.type === 'armored') {
         round(ctx, -l / 2 + 4, -w / 2 + 3, l * 0.62, w - 6, 2, body);
         ctx.strokeStyle = '#1C19163A';
@@ -500,7 +491,7 @@ function paintCarCabin(ctx, c, body, l, w) {
     }
 }
 
-function paintCarLivery(ctx, c, time, dusk, l, w) {
+function carTrim(ctx, c, time, dusk, l, w) {
     if (c.type === 'armored') {
         round(ctx, -19, -8, 25, 16, 2, '#637F7C', P.ink);
         for (const x of [-16, 2]) {
@@ -539,7 +530,7 @@ function paintCarLivery(ctx, c, time, dusk, l, w) {
     }
 }
 
-function paintCarDamage(ctx, c, def, l) {
+function carWear(ctx, c, def) {
     if (c.hp < def.hp * 0.45) {
         ctx.strokeStyle = '#675652';
         ctx.lineWidth = 1;
@@ -568,17 +559,17 @@ export function drawCar(ctx, c, time, dusk = 0) {
     ctx.save();
     ctx.translate(c.x, c.y);
     ctx.rotate(c.h);
-    const body = paintCarBody(ctx, c, def, l, w);
-    paintCarCabin(ctx, c, body, l, w);
-    paintCarLivery(ctx, c, time, dusk, l, w);
-    paintCarDamage(ctx, c, def, l);
+    const body = carWheelsAndShell(ctx, c, l, w);
+    carGlasswork(ctx, c, body, l, w);
+    carTrim(ctx, c, time, dusk, l, w);
+    carWear(ctx, c, def);
     ctx.restore();
 }
 
-// ---------------------------------------------------------------------------
-// People: a small top-down figure — shoes, torso, hands or a raised arm,
-// head with hair, plus officer cap and the player's coral jacket flash.
-// ---------------------------------------------------------------------------
+// --- people ----------------------------------------------------------------
+// A small top-down figure — shoes, torso, hands or a raised arm, head
+// with hair, plus officer cap and the player's coral jacket flash.
+
 export function drawPersonShadow(ctx, p, dusk) {
     ellipse(ctx, p.x + 5 + dusk * 5, p.y + 6 + dusk, 8, 4, '#243A3E40');
 }
@@ -587,9 +578,7 @@ export function drawPerson(ctx, p, time) {
     ctx.save();
     ctx.translate(p.x, p.y);
     ctx.rotate(p.h || 0);
-    if (p.dead) {
-        ctx.rotate(Math.PI / 2);
-    }
+    if (p.dead) ctx.rotate(Math.PI / 2);
     const stride = p.moving ? Math.sin(time * 14 + (p.id || 0)) * 2.3 : 0;
     round(ctx, -4 + stride, -6, 5, 3, 1, P.pearl, P.ink);
     round(ctx, -4 - stride, 3, 5, 3, 1, P.pearl, P.ink);
@@ -603,9 +592,7 @@ export function drawPerson(ctx, p, time) {
         if (p.armed) {
             ctx.fillStyle = P.trousers;
             ctx.fillRect(7, -7, 7, 3);
-            if (p.flash > 0) {
-                polygon(ctx, [[15, -7], [21, -9], [19, -5], [24, -4], [18, -2], [15, -4]], P.mango);
-            }
+            if (p.flash > 0) polygon(ctx, [[15, -7], [21, -9], [19, -5], [24, -4], [18, -2], [15, -4]], P.mango);
         }
     } else {
         ellipse(ctx, -1, -6, 2, 2, p.skin || '#C48A62');
@@ -631,10 +618,10 @@ export function drawPerson(ctx, p, time) {
     ctx.restore();
 }
 
-// ---------------------------------------------------------------------------
-// Props: palms (swaying fronds), lamps (glow at dusk), benches, beach
-// umbrellas with chairs, cargo containers and diner table sets.
-// ---------------------------------------------------------------------------
+// --- props -----------------------------------------------------------------
+// Palms (swaying fronds), lamps (glow at dusk), benches, beach umbrellas
+// with chairs, cargo containers and diner table sets.
+
 export function drawPropShadow(ctx, p, dusk) {
     if (p.kind === 'palm') {
         ellipse(ctx, p.x + 12 + dusk * 4, p.y + 7, 23 * p.scale, 9 * p.scale, '#294C4430');
@@ -650,7 +637,7 @@ export function drawPropShadow(ctx, p, dusk) {
     }
 }
 
-function paintPalm(ctx, p, time) {
+function palmTree(ctx, p, time) {
     const { x, y } = p;
     const s = p.scale || 1;
     const tx = x - 3 * s;
@@ -689,7 +676,7 @@ function paintPalm(ctx, p, time) {
     ellipse(ctx, tx, ty, 4 * s, 3 * s, '#7EAF79');
 }
 
-function paintLamp(ctx, p, dusk) {
+function streetLamp(ctx, p, dusk) {
     const { x, y } = p;
     ellipse(ctx, x, y, 4, 3, '#8D938C');
     ctx.strokeStyle = '#647C78';
@@ -712,9 +699,9 @@ function paintLamp(ctx, p, dusk) {
 export function drawProp(ctx, p, time, dusk) {
     const { x, y } = p;
     if (p.kind === 'palm') {
-        paintPalm(ctx, p, time);
+        palmTree(ctx, p, time);
     } else if (p.kind === 'lamp') {
-        paintLamp(ctx, p, dusk);
+        streetLamp(ctx, p, dusk);
     } else if (p.kind === 'bench') {
         ctx.save();
         ctx.translate(x, y);
@@ -755,9 +742,7 @@ export function drawProp(ctx, p, time, dusk) {
     } else if (p.kind === 'tables') {
         for (const sx of [-47, 0, 47]) {
             ellipse(ctx, x + sx, y, 13, 10, P.trim);
-            for (const sy of [-17, 17]) {
-                round(ctx, x + sx - 5, y + sy - 4, 10, 8, 2, P.carCoral);
-            }
+            for (const sy of [-17, 17]) round(ctx, x + sx - 5, y + sy - 4, 10, 8, 2, P.carCoral);
             ellipse(ctx, x + sx + 1, y - 1, 2, 2, P.teal);
         }
     }
@@ -779,9 +764,7 @@ export function drawPickup(ctx, p, time) {
         text(ctx, '$', 0, 5, 14, P.trim, 'center');
     } else {
         ctx.fillStyle = P.wood;
-        for (let n = -4; n <= 4; n += 4) {
-            round(ctx, n - 1, -5, 2, 9, 1, P.trim);
-        }
+        for (let n = -4; n <= 4; n += 4) round(ctx, n - 1, -5, 2, 9, 1, P.trim);
     }
     ctx.restore();
 }

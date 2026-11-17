@@ -1,16 +1,16 @@
-// Neon Bay Nights — vehicles: car physics, lane-following traffic AI,
-// parked cars, collisions, damage and smoke.
+// Neon Bay Nights — cars: arcade physics, lane-following traffic,
+// parked rows, collisions, damage and smoke.
 import { CARS, CAR_COLORS, PALETTE as P, ROADS_X, ROADS_Y, WORLD, clamp, angleDelta, dist } from './config.js';
 import { nearestNode, moveCircle, signalGreen, lineClear, isSolid, roadDistance } from './world.js';
 import { missionEvent } from './missions.js';
 
-let nextId = 1;
+let serial = 1;
 
-// A fresh car. Traffic and patrol cars start with a driver; parked cars and
-// mission cars do not. `ambient` marks traffic the city may recycle.
+// One fresh car. Traffic and patrol cars start with a driver; parked cars
+// and mission cars do not. `ambient` marks traffic the city may recycle.
 export function makeCar(type, x, y, h, color, ai = 'parked') {
     return {
-        id: nextId++, type, x, y, h,
+        id: serial++, type, x, y, h,
         color: color || (type === 'police' ? P.pearl : type === 'taxi' ? P.taxi : P.teal),
         ai, vx: 0, vy: 0, speed: 0, hp: CARS[type].hp, wreck: false,
         driver: ai === 'traffic' || ai === 'patrol', ambient: ai === 'traffic',
@@ -23,7 +23,7 @@ export function makeCar(type, x, y, h, color, ai = 'parked') {
 // Fill the city: 50 moving traffic cars, a parked row along every avenue,
 // two hand-placed rides, and two NBPD patrol cruisers.
 export function populateVehicles(game) {
-    nextId = 1;
+    serial = 1;
     const { rng, world } = game;
     const cars = [];
     for (let i = 0; i < 50; i++) {
@@ -62,12 +62,12 @@ export function populateVehicles(game) {
     game.cars = cars;
 }
 
-// --- Traffic AI ------------------------------------------------------------
+// --- traffic brains --------------------------------------------------------
 // A traffic car follows its lane from one junction to the next, aiming at a
 // look-ahead point so it stays in lane instead of cutting the diagonal.
 // It slows for corners, red lights, the car ahead, and pedestrians on foot.
 
-function laneTarget(game, c, from, to, heading) {
+function aimPoint(game, c, from, to, heading) {
     const end = { x: to.x - Math.sin(heading) * WORLD.lane, y: to.y + Math.cos(heading) * WORLD.lane };
     const start = { x: from.x - Math.sin(heading) * WORLD.lane, y: from.y + Math.cos(heading) * WORLD.lane };
     const fx = Math.cos(heading);
@@ -78,7 +78,7 @@ function laneTarget(game, c, from, to, heading) {
     return { target: { x: start.x + fx * look, y: start.y + fy * look }, remaining: dist(c, end) };
 }
 
-function trafficControl(game, c, dt) {
+function driveTraffic(game, c, dt) {
     if (!c.route) {
         const n = nearestNode(game.world, c.x, c.y);
         c.route = { from: n.id, to: game.rng.pick(n.links) };
@@ -86,11 +86,11 @@ function trafficControl(game, c, dt) {
     const from = game.world.nodes[c.route.from];
     const to = game.world.nodes[c.route.to];
     const heading = Math.atan2(to.y - from.y, to.x - from.x);
-    const { target, remaining } = laneTarget(game, c, from, to, heading);
+    const { target, remaining } = aimPoint(game, c, from, to, heading);
     if (remaining < 29) {
         const options = to.links.filter(id => id !== from.id);
         c.route = { from: to.id, to: game.rng.pick(options.length ? options : to.links) };
-        return trafficControl(game, c, dt);
+        return driveTraffic(game, c, dt);
     }
     let desired = c.cruise || 105;
     const angle = Math.atan2(target.y - c.y, target.x - c.x);
@@ -116,22 +116,20 @@ function trafficControl(game, c, dt) {
         const dx = game.player.x - c.x;
         const dy = game.player.y - c.y;
         const along = dx * aheadX + dy * aheadY;
-        if (along > 0 && along < 75 && Math.abs(dx * aheadY - dy * aheadX) < 22) {
-            desired = 0;
-        }
+        if (along > 0 && along < 75 && Math.abs(dx * aheadY - dy * aheadX) < 22) desired = 0;
     }
     c.throttle = c.speed < desired - 4 ? clamp((desired - c.speed) / 35, 0.1, 1) : 0;
     c.braking = c.speed > desired + 4;
     c.steer = clamp(delta * 3, -1, 1);
 }
 
-// --- Per-frame update ------------------------------------------------------
+// --- per-frame update ------------------------------------------------------
 
 export function updateVehicles(game, dt) {
     for (const c of game.cars) {
         c.stillTime = Math.abs(c.speed) < 6 ? c.stillTime + dt : 0;
         if (c.ambient && (c.stillTime > 18 || c.wreck) && dist(c, game.player) > 950) {
-            recycleTraffic(game, c);
+            respawnTraffic(game, c);
         }
         c.impactCooldown = Math.max(0, c.impactCooldown - dt);
         if (c.wreck) {
@@ -154,15 +152,15 @@ export function updateVehicles(game, dt) {
             c.braking = axis.y > 0 && c.speed > 8;
             c.handbrake = game.input.down('ShiftLeft', 'ShiftRight');
         } else if (c.ai === 'traffic' || c.ai === 'patrol') {
-            trafficControl(game, c, dt);
+            driveTraffic(game, c, dt);
         } else if (c.ai !== 'police') {
             c.throttle = 0;
             c.steer = 0;
             c.braking = true;
         }
-        stepPhysics(game, c, dt, driven);
+        advanceCar(game, c, dt, driven);
     }
-    resolveCollisions(game);
+    settleHits(game);
     if (game.player.car) {
         game.player.x = game.player.car.x;
         game.player.y = game.player.car.y;
@@ -171,7 +169,7 @@ export function updateVehicles(game, dt) {
 
 // Symmetric impulses: ramming, traffic avoidance and wrecks all live in the
 // same physical world, so both cars in a hit share the push.
-function resolveCollisions(game) {
+function settleHits(game) {
     for (let i = 0; i < game.cars.length; i++) {
         for (let j = i + 1; j < game.cars.length; j++) {
             const a = game.cars[i];
@@ -179,7 +177,7 @@ function resolveCollisions(game) {
             const dx = b.x - a.x;
             const dy = b.y - a.y;
             if (Math.abs(dx) > 55 || Math.abs(dy) > 55) continue;
-            const contact = carContact(a, b, dx, dy);
+            const contact = overlapBoxes(a, b, dx, dy);
             if (!contact) continue;
             const { nx, ny, overlap } = contact;
             const relative = (a.vx - b.vx) * nx + (a.vy - b.vy) * ny;
@@ -212,12 +210,12 @@ function resolveCollisions(game) {
     }
 }
 
-// --- Physics ---------------------------------------------------------------
+// --- physics ---------------------------------------------------------------
 // Arcade handling: speed follows throttle/brake, steering tightens at low
 // speed, and velocity eases toward the heading (grip) so the car drifts
 // instead of snapping sideways. The handbrake loosens the grip.
 
-function stepPhysics(game, c, dt, driven) {
+function advanceCar(game, c, dt, driven) {
     const def = CARS[c.type];
     const oldSpeed = c.speed;
     if (c.braking) {
@@ -255,7 +253,7 @@ function stepPhysics(game, c, dt, driven) {
             }
         }
     }
-    laySkids(game, c, dt, driven);
+    dropSkids(game, c, dt, driven);
     if (driven) {
         game.stats.distance += Math.abs(c.speed) * dt;
         game.stats.topSpeed = Math.max(game.stats.topSpeed, Math.abs(c.speed) * 0.32);
@@ -268,12 +266,10 @@ function stepPhysics(game, c, dt, driven) {
             c.smokeTimer = 0.12;
         }
     }
-    if (c.type === 'police' && c.ai === 'patrol' && driven) {
-        c.ai = 'parked';
-    }
+    if (c.type === 'police' && c.ai === 'patrol' && driven) c.ai = 'parked';
 }
 
-function laySkids(game, c, dt, driven) {
+function dropSkids(game, c, dt, driven) {
     const slip = Math.abs(angleDelta(c.h, Math.atan2(c.vy, c.vx)));
     if (!driven || Math.abs(c.speed) <= 95) return;
     if (!(Math.abs(c.steer) > 0.65 || c.handbrake || slip > 0.35)) return;
@@ -291,7 +287,7 @@ function laySkids(game, c, dt, driven) {
     if (game.skids.length > 500) game.skids.splice(0, 10);
 }
 
-// --- Damage, queries -------------------------------------------------------
+// --- damage, queries, recycling --------------------------------------------
 
 export function damageCar(game, c, amount) {
     if (c.wreck) return;
@@ -342,7 +338,7 @@ export function canExit(game, c) {
 // Separating axes for the two oriented body rectangles. Side-by-side parked
 // cars must not obstruct a traffic lane simply because their bounding
 // circles overlap.
-function carContact(a, b, dx, dy) {
+function overlapBoxes(a, b, dx, dy) {
     const af = { x: Math.cos(a.h), y: Math.sin(a.h) };
     const bf = { x: Math.cos(b.h), y: Math.sin(b.h) };
     const axes = [af, { x: -af.y, y: af.x }, bf, { x: -bf.y, y: bf.x }];
@@ -366,7 +362,7 @@ function carContact(a, b, dx, dy) {
 // Only distant ambient traffic is recycled. Cars in view and every borrowed
 // car retain their physical history; distant jams and wrecks do not empty
 // the city.
-function recycleTraffic(game, c) {
+function respawnTraffic(game, c) {
     for (let trial = 0; trial < 16; trial++) {
         const from = game.rng.pick(game.world.nodes);
         const to = game.world.nodes[game.rng.pick(from.links)];

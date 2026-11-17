@@ -1,28 +1,28 @@
 // Run with: node --test tests/core.test.mjs
-// A minimal canvas/DOM host lets the real ES modules run with no browser
-// and no network. The stubs below only fake drawing and events; every
+// A small canvas/DOM stand-in lets the real ES modules run with no browser
+// and no network. The fakes below only swallow drawing and events; every
 // simulation under test is the production code.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 const noop = () => {};
 
-// Give an object an event registry: listeners added with addEventListener
-// can be fired later with emit(type, event).
-function withEvents(target) {
+// Give an object a listener registry: handlers added with addEventListener
+// can be triggered later with fire(type, event).
+function attachEvents(target) {
     const listeners = new Map();
     target.addEventListener = (type, fn) => {
         if (!listeners.has(type)) listeners.set(type, []);
         listeners.get(type).push(fn);
     };
-    target.emit = (type, event = {}) => {
+    target.fire = (type, event = {}) => {
         for (const fn of listeners.get(type) || []) fn(event);
     };
     return target;
 }
 
 // A 2D context that accepts every call the renderer makes and forgets it.
-const context = new Proxy(
+const fakeCtx = new Proxy(
     {
         measureText: s => ({ width: String(s).length * 6 }),
         createLinearGradient: () => ({ addColorStop: noop }),
@@ -31,18 +31,18 @@ const context = new Proxy(
     { get: (o, k) => (k in o ? o[k] : noop), set: (o, k, v) => ((o[k] = v), true) }
 );
 
-const makeCanvas = () =>
-    withEvents({
+const stubCanvas = () =>
+    attachEvents({
         width: 1280,
         height: 800,
-        getContext: () => context,
+        getContext: () => fakeCtx,
         addEventListener: noop,
         focus: noop,
         getBoundingClientRect: () => ({ left: 0, top: 0 })
     });
 
-const canvas = makeCanvas();
-const screen = withEvents({
+const canvas = stubCanvas();
+const screen = attachEvents({
     style: {},
     classList: { add: noop, remove: noop },
     addEventListener: noop,
@@ -59,10 +59,10 @@ globalThis.localStorage = {
 globalThis.location = { search: '?debug=1' };
 globalThis.document = {
     querySelector: q => (q === '#game' ? canvas : screen),
-    createElement: makeCanvas,
+    createElement: stubCanvas,
     addEventListener: noop
 };
-globalThis.window = withEvents({
+globalThis.window = attachEvents({
     innerWidth: 1280,
     innerHeight: 800,
     devicePixelRatio: 1,
@@ -83,9 +83,9 @@ const { readSave } = await import('../game/src/save.js');
 const { Renderer } = await import('../game/src/render.js');
 const { CARS, PALETTE: P } = await import('../game/src/config.js');
 
-// --- Scenario helpers ------------------------------------------------------
+// --- scenario helpers ------------------------------------------------------
 
-function newGame(seed = 1706) {
+function freshGame(seed = 1706) {
     const g = createGame(seed);
     g.input.clear();
     g.input.mouse.aim = false;
@@ -93,26 +93,26 @@ function newGame(seed = 1706) {
     return g;
 }
 
-function advance(g, n = 1) {
+function tick(g, n = 1) {
     for (let i = 0; i < n; i++) {
         updateGame(g);
         g.input.endFrame();
     }
 }
 
-function holdKey(g, key, n) {
+function hold(g, key, n) {
     g.input.keys.add(key);
-    advance(g, n);
+    tick(g, n);
     g.input.keys.delete(key);
 }
 
-function pressKey(g, key) {
+function tapKey(g, key) {
     g.input.pressed.add(key);
-    advance(g);
+    tick(g);
 }
 
 // Strip the world down to the player so one mechanic can be measured alone.
-function clearActors(g) {
+function stripActors(g) {
     g.cars = [];
     g.peds = [];
     g.enemies = [];
@@ -121,15 +121,15 @@ function clearActors(g) {
     g.world.pickups = [];
 }
 
-function parkPlayer(g, x, y) {
+function parkFar(g) {
     g.player.x = 2900;
     g.player.y = 1500;
     return g;
 }
 
 test('deterministic, connected city; all important positions are accessible', () => {
-    const a = newGame();
-    const b = newGame();
+    const a = freshGame();
+    const b = freshGame();
     assert.deepEqual(a.world.buildings, b.world.buildings);
     assert.deepEqual(a.cars, b.cars);
     assert.equal(a.world.nodes.length, 49);
@@ -142,29 +142,29 @@ test('deterministic, connected city; all important positions are accessible', ()
 });
 
 test('walking, sprinting and solid buildings', () => {
-    const a = newGame();
-    clearActors(a);
+    const a = freshGame();
+    stripActors(a);
     const x = a.player.x;
-    holdKey(a, 'KeyA', 30);
+    hold(a, 'KeyA', 30);
     assert.ok(a.player.x < x - 45);
     assert.ok(a.player.x > x - 58);
-    const b = newGame();
-    clearActors(b);
+    const b = freshGame();
+    stripActors(b);
     b.input.keys.add('ShiftLeft');
-    holdKey(b, 'KeyA', 30);
+    hold(b, 'KeyA', 30);
     assert.ok(b.player.x < a.player.x - 25);
     assert.ok(b.player.stamina < 1);
     const block = a.world.buildings[0];
     a.player.x = block.x - 9;
     a.player.y = block.y + 30;
-    holdKey(a, 'KeyD', 60);
+    hold(a, 'KeyD', 60);
     assert.equal(isSolid(a.world, a.player.x, a.player.y, 7), false);
     assert.ok(a.player.x < block.x);
 });
 
 test('first car is reachable, drives, brakes, reverses, steers, exits safely', () => {
-    const g = newGame();
-    pressKey(g, 'KeyE');
+    const g = freshGame();
+    tapKey(g, 'KeyE');
     assert.equal(g.player.car?.type, 'sports');
     assert.equal(g.stats.stolen, 1);
     const c = g.player.car;
@@ -176,29 +176,29 @@ test('first car is reachable, drives, brakes, reverses, steers, exits safely', (
     c.y = 1429;
     c.h = 0;
     c.vx = c.vy = c.speed = 0;
-    holdKey(g, 'KeyW', 45);
+    hold(g, 'KeyW', 45);
     assert.ok(c.x > 2330);
     assert.ok(c.speed > 130);
     const h = c.h;
     g.input.keys.add('KeyW');
-    holdKey(g, 'KeyD', 24);
+    hold(g, 'KeyD', 24);
     g.input.keys.delete('KeyW');
     assert.ok(c.h > h + 0.2);
-    holdKey(g, 'KeyS', 150);
+    hold(g, 'KeyS', 150);
     assert.ok(c.speed < 0);
     assert.ok(c.speed >= -95);
     c.speed = c.vx = c.vy = 0;
     g.player.carCooldown = 0;
-    pressKey(g, 'KeyE');
+    tapKey(g, 'KeyE');
     assert.equal(g.player.car, null);
     assert.ok(Math.hypot(g.player.x - c.x, g.player.y - c.y) > 20);
     assert.equal(isSolid(g.world, g.player.x, g.player.y, 7), false);
 });
 
 test('lane traffic passes parked cars without phantom collisions and stops for red', () => {
-    const g = newGame();
-    clearActors(g);
-    parkPlayer(g);
+    const g = freshGame();
+    stripActors(g);
+    parkFar(g);
     const c = makeCar('sedan', 1390, 1900, Math.PI / 2, P.teal, 'traffic');
     const parked = makeCar('van', 1362, 1930, Math.PI / 2, P.carMint);
     c.route = { from: 31, to: 38 };
@@ -206,13 +206,13 @@ test('lane traffic passes parked cars without phantom collisions and stops for r
     c.vy = 100;
     c.cruise = 110;
     g.cars = [c, parked];
-    advance(g, 60);
+    tick(g, 60);
     assert.ok(c.y > 1980);
     assert.ok(Math.abs(c.x - 1390) < 2);
     assert.equal(c.hp, CARS.sedan.hp);
-    const h = newGame();
-    clearActors(h);
-    parkPlayer(h);
+    const h = freshGame();
+    stripActors(h);
+    parkFar(h);
     h.time = -11.4;
     const car = makeCar('sedan', 1390, 2020, Math.PI / 2, P.teal, 'traffic');
     car.route = { from: 31, to: 38 };
@@ -220,22 +220,22 @@ test('lane traffic passes parked cars without phantom collisions and stops for r
     car.vy = 100;
     car.cruise = 110;
     h.cars = [car];
-    advance(h, 120);
+    tick(h, 120);
     assert.ok(car.y < 2100);
     assert.ok(car.speed < 6);
     const stop = car.y;
     h.time = -4.4;
-    advance(h, 120);
+    tick(h, 120);
     assert.ok(car.y > stop + 70);
 });
 
 test('traffic cars can be stolen; moving drivers flee', () => {
-    const g = newGame();
-    clearActors(g);
+    const g = freshGame();
+    stripActors(g);
     const c = makeCar('taxi', g.player.x + 25, g.player.y, 0, P.taxi, 'traffic');
     c.speed = 30;
     g.cars = [c];
-    pressKey(g, 'KeyE');
+    tapKey(g, 'KeyE');
     assert.equal(g.player.car, c);
     assert.equal(c.driver, false);
     assert.equal(g.peds.length, 1);
@@ -243,21 +243,21 @@ test('traffic cars can be stolen; moving drivers flee', () => {
 });
 
 test('theft only creates wanted heat when witnessed; cruiser unlock at two stars', () => {
-    const g = newGame();
-    clearActors(g);
+    const g = freshGame();
+    stripActors(g);
     const c = makeCar('sedan', g.player.x + 25, g.player.y, 0, P.teal);
     g.cars = [c];
-    pressKey(g, 'KeyE');
+    tapKey(g, 'KeyE');
     assert.equal(g.police.stars, 0);
-    const h = newGame();
-    clearActors(h);
+    const h = freshGame();
+    stripActors(h);
     const s = makeCar('sedan', h.player.x + 24, h.player.y, 0, P.teal);
     const cop = makeCar('police', h.player.x + 90, h.player.y, Math.PI, P.pearl, 'patrol');
     h.cars = [s, cop];
-    pressKey(h, 'KeyE');
+    tapKey(h, 'KeyE');
     assert.ok(h.police.stars >= 1);
-    const j = newGame();
-    clearActors(j);
+    const j = freshGame();
+    stripActors(j);
     const cruiser = makeCar('police', j.player.x + 25, j.player.y, 0, P.pearl, 'police');
     j.cars = [cruiser];
     interact(j);
@@ -268,48 +268,48 @@ test('theft only creates wanted heat when witnessed; cruiser unlock at two stars
 });
 
 test('police dispatch, foot pursuit, arrest meter and recovery state', () => {
-    const g = newGame();
-    clearActors(g);
+    const g = freshGame();
+    stripActors(g);
     setWanted(g, 3);
-    advance(g, 90);
+    tick(g, 90);
     assert.ok(g.police.units.length > 0);
     assert.equal(g.police.units[0].car.ai, 'police');
-    clearActors(g);
+    stripActors(g);
     g.police.officers = [
         { id: 1, x: g.player.x + 20, y: g.player.y, h: 0, hp: 90, dead: false, role: 'officer', jacket: P.navy, cooldown: 100 }
     ];
     g.player.invincible = 100;
-    advance(g, 180);
+    tick(g, 180);
     assert.equal(g.mode, 'over');
     assert.equal(g.reason, 'busted');
     assert.equal(g.police.bust, 1);
 });
 
 test('a pursuing cruiser closes a clear road instead of turning back toward a junction', () => {
-    const g = newGame();
-    clearActors(g);
+    const g = freshGame();
+    stripActors(g);
     Object.assign(g.player, { x: 2500, y: 1429, invincible: 100 });
     const car = makeCar('police', 1880, 1429, 0, P.pearl, 'police');
     g.cars = [car];
     g.police.units = [{ car, path: [], repath: 0, deployed: false, retire: 0 }];
     setWanted(g, 2);
     g.police.spawnTimer = 10000;
-    advance(g, 180);
+    tick(g, 180);
     assert.ok(Math.hypot(car.x - g.player.x, car.y - g.player.y) < 150);
     assert.ok(g.police.officers.length > 0);
 });
 
 test('wanted clears after hiding; a different car reduces recognition range', () => {
-    const g = newGame();
-    clearActors(g);
+    const g = freshGame();
+    stripActors(g);
     setWanted(g, 2);
     g.police.spawnTimer = 10000;
-    advance(g, 2400);
+    tick(g, 2400);
     assert.equal(g.police.stars, 0);
     assert.equal(g.police.heat, 0);
     assert.equal(g.stats.escapes, 1);
-    const h = newGame();
-    clearActors(h);
+    const h = freshGame();
+    stripActors(h);
     setWanted(h, 2);
     h.police.spawnTimer = 10000;
     const c = makeCar('sports', 2400, 1429, 0, P.magenta);
@@ -319,16 +319,16 @@ test('wanted clears after hiding; a different car reduces recognition range', ()
     h.police.knownCar = -1;
     const cop = makeCar('police', 2150, 1429, 0, P.pearl, 'patrol');
     h.cars = [c, cop];
-    advance(h);
+    tick(h);
     assert.equal(h.police.seen, false);
     h.police.knownCar = c.id;
-    advance(h);
+    tick(h);
     assert.equal(h.police.seen, true);
 });
 
 test('combat uses ammo; shots hit rivals, punch works, drops can be collected', () => {
-    const g = newGame();
-    clearActors(g);
+    const g = freshGame();
+    stripActors(g);
     g.player.x = 2370;
     g.player.y = 1429;
     g.player.h = 0;
@@ -336,46 +336,46 @@ test('combat uses ammo; shots hit rivals, punch works, drops can be collected', 
         { id: 500, x: 2460, y: 1429, h: Math.PI, hp: 50, maxHp: 50, dead: false, role: 'rival', home: { x: 2460, y: 1429 }, cooldown: 100, aggro: 0, flash: 0 }
     ];
     g.police.spawnTimer = 10000;
-    holdKey(g, 'Space', 55);
+    hold(g, 'Space', 55);
     assert.ok(g.player.ammo < 36);
     assert.equal(g.enemies[0].dead, true);
     assert.ok(g.world.pickups.some(p => p.kind === 'cash'));
     assert.ok(g.stats.reputation >= 100);
-    const h = newGame();
-    clearActors(h);
+    const h = freshGame();
+    stripActors(h);
     h.player.x = 2370;
     h.player.y = 1429;
     h.player.h = 0;
     h.enemies = [
         { id: 501, x: 2394, y: 1429, h: 0, hp: 25, maxHp: 25, role: 'rival', dead: false, flash: 0, cooldown: 100, home: { x: 2394, y: 1429 } }
     ];
-    pressKey(h, 'KeyF');
+    tapKey(h, 'KeyF');
     assert.equal(h.enemies[0].dead, true);
     assert.ok(h.player.punch > 0);
     const drops = h.world.pickups;
     h.player.x = drops[0].x;
     h.player.y = drops[0].y;
     const cash = h.player.cash;
-    advance(h);
+    tick(h);
     assert.ok(h.player.cash > cash);
 });
 
 test('crashes damage cars; wrecks are unusable and still smoke', () => {
-    const g = newGame();
-    clearActors(g);
+    const g = freshGame();
+    stripActors(g);
     const c = makeCar('sports', 2300, 1429, 0, P.magenta);
     g.cars = [c];
     g.player.car = c;
     damageCar(g, c, 101);
     assert.equal(c.wreck, true);
-    advance(g, 60);
+    tick(g, 60);
     assert.ok(g.particles.some(p => p.kind === 'smoke'));
     assert.equal(c.hp, 0);
 });
 
 test('shop interactions repair, repaint, refill ammo and restore health', () => {
-    const g = newGame();
-    clearActors(g);
+    const g = freshGame();
+    stripActors(g);
     const s = g.world.services.find(s => s.kind === 'garage');
     const c = makeCar('sports', s.x, s.y, 0, P.magenta);
     g.cars = [c];
@@ -383,7 +383,7 @@ test('shop interactions repair, repaint, refill ammo and restore health', () => 
     g.player.x = s.x;
     g.player.y = s.y;
     c.hp = 20;
-    pressKey(g, 'KeyR');
+    tapKey(g, 'KeyR');
     assert.equal(c.hp, CARS.sports.hp);
     assert.equal(g.player.cash, 250);
     g.player.car = null;
@@ -400,7 +400,7 @@ test('shop interactions repair, repaint, refill ammo and restore health', () => 
 });
 
 test('save round-trips persistent state; invalid and denied storage are handled', () => {
-    const g = newGame();
+    const g = freshGame();
     g.player.cash = 1234;
     g.player.ammo = 22;
     g.stats.reputation = 540;
@@ -435,7 +435,7 @@ test('save round-trips persistent state; invalid and denied storage are handled'
 });
 
 test('mission hook receives real core events and updates marker/objective', () => {
-    const g = newGame();
+    const g = freshGame();
     const events = [];
     installMission(g, {
         objective: 'Drive to the garage.',
@@ -445,7 +445,7 @@ test('mission hook receives real core events and updates marker/objective', () =
             this.objective = 'Keep rolling.';
         }
     });
-    pressKey(g, 'KeyE');
+    tapKey(g, 'KeyE');
     assert.ok(events.includes('enterCar'));
     assert.ok(events.includes('tick'));
     assert.equal(g.mission.objective, 'Keep rolling.');
@@ -453,13 +453,13 @@ test('mission hook receives real core events and updates marker/objective', () =
 });
 
 test('render paths execute for on foot, driving, police, map, dusk and defeat', () => {
-    const g = newGame();
+    const g = freshGame();
     const r = new Renderer(canvas, g.world);
     r.render(g);
-    pressKey(g, 'KeyE');
+    tapKey(g, 'KeyE');
     r.render(g);
     setWanted(g, 5);
-    advance(g, 120);
+    tick(g, 120);
     r.render(g);
     g.mapOpen = true;
     r.render(g);
@@ -472,12 +472,12 @@ test('render paths execute for on foot, driving, police, map, dusk and defeat', 
 });
 
 test('title, start, pause, map, mute, defeat, recovery and Continue use the real screen state machine', () => {
-    const menu = action => screen.emit('click', { target: { closest: () => ({ dataset: { action } }) } });
+    const menu = action => screen.fire('click', { target: { closest: () => ({ dataset: { action } }) } });
     let timestamp = performance.now();
     const key = code => {
-        window.emit('keydown', { code, preventDefault: noop });
+        window.fire('keydown', { code, preventDefault: noop });
         pendingFrame(timestamp += 20);
-        window.emit('keyup', { code });
+        window.fire('keyup', { code });
     };
     menu('new');
     assert.equal(window.__neon.game.mode, 'play');
@@ -492,7 +492,7 @@ test('title, start, pause, map, mute, defeat, recovery and Continue use the real
     const g = window.__neon.game;
     assert.equal(g.mapOpen, true);
     const r = g.mapRect;
-    canvas.emit('pointerdown', { button: 0, clientX: r.x + r.w / 2, clientY: r.y + r.h / 2 });
+    canvas.fire('pointerdown', { button: 0, clientX: r.x + r.w / 2, clientY: r.y + r.h / 2 });
     assert.equal(g.mapOpen, false);
     assert.ok(Number.isFinite(g.waypoint.x));
     g.player.cash = 500;
@@ -545,7 +545,7 @@ test('procedural sound schedules valid notes, responds to speed and sirens, and 
     };
     try {
         const a = new Audio();
-        const g = newGame();
+        const g = freshGame();
         a.unlock();
         g.player.car = makeCar('sports', g.player.x, g.player.y, 0, P.magenta);
         g.player.car.speed = 200;
@@ -573,11 +573,11 @@ test('procedural sound schedules valid notes, responds to speed and sirens, and 
 
 test('two minutes of city simulation remain finite, bounded and deterministic', () => {
     function run() {
-        const g = newGame(92);
+        const g = freshGame(92);
         g.player.x = 2900;
         g.player.y = 1500;
         g.player.invincible = 1000;
-        advance(g, 7200);
+        tick(g, 7200);
         for (const c of g.cars) {
             assert.ok(Number.isFinite(c.x) && Number.isFinite(c.y) && Number.isFinite(c.h));
             assert.ok(c.x >= 40 && c.x < g.world.width);
@@ -591,29 +591,29 @@ test('two minutes of city simulation remain finite, bounded and deterministic', 
 });
 
 test('story progression, briefings, timer failure, retry and saved rewards', () => {
-    const g = newGame();
+    const g = freshGame();
     assert.equal(startMission(g, 'm3'), false);
     assert.ok(startMission(g, 'm1'));
     const cash = g.player.cash;
-    advance(g, 120);
+    tick(g, 120);
     assert.equal(g.mission.active.remaining, 90, 'briefing freezes the deadline');
     advanceDialogue(g);
-    pressKey(g, 'KeyE');
+    tapKey(g, 'KeyE');
     assert.equal(g.player.car, g.mission.active.target);
-    holdKey(g, 'KeyW', 20);
+    hold(g, 'KeyW', 20);
     assert.ok(g.stats.distance > 0);
     g.mission.active.elapsed = 90;
-    advance(g);
+    tick(g);
     assert.equal(g.mode, 'mission-failed');
     assert.equal(g.player.cash, cash);
     assert.ok(startMission(g, 'm1'));
     advanceDialogue(g);
-    pressKey(g, 'KeyE');
+    tapKey(g, 'KeyE');
     Object.assign(g.player.car, JOB_POINTS.hotel, { speed: 0, vx: 0, vy: 0 });
-    advance(g);
+    tick(g);
     assert.equal(g.mission.active.phase, 'outro');
     assert.equal(g.player.cash, cash + 250);
-    advance(g, 60);
+    tick(g, 60);
     assert.equal(g.player.cash, cash + 250, 'reward cannot be paid twice by the update loop');
     assert.ok(isUnlocked(g.mission.completed, 'm2'));
     assert.equal(isUnlocked(g.mission.completed, 'm3'), false);
@@ -624,7 +624,7 @@ test('story progression, briefings, timer failure, retry and saved rewards', () 
 });
 
 test('Hot Wheels finishes through real wanted decay; Repo Man requires the exact car', () => {
-    const g = newGame();
+    const g = freshGame();
     g.mission.completed = ['m1'];
     startMission(g, 'm2');
     advanceDialogue(g);
@@ -632,7 +632,7 @@ test('Hot Wheels finishes through real wanted decay; Repo Man requires the exact
     g.cars = [g.player.car];
     g.peds = [];
     g.police.spawnTimer = 10000;
-    advance(g, 2400);
+    tick(g, 2400);
     assert.equal(g.police.stars, 0);
     assert.equal(g.mission.active.phase, 'outro');
     assert.equal(g.stats.escapes, 1);
@@ -644,17 +644,17 @@ test('Hot Wheels finishes through real wanted decay; Repo Man requires the exact
     const wrong = makeCar('sports', JOB_POINTS.garage.x, JOB_POINTS.garage.y, 0, P.magenta);
     g.cars.push(wrong);
     g.player.car = wrong;
-    advance(g);
+    tick(g);
     assert.equal(g.mission.active.phase, 'active');
     g.player.car = target;
     Object.assign(target, JOB_POINTS.garage, { speed: 0, vx: 0, vy: 0 });
-    advance(g);
+    tick(g);
     assert.equal(g.mission.active.phase, 'outro');
     assert.ok(g.mission.completed.includes('m3'));
 });
 
 test('Diner Defense uses real combat and the van finale enforces all three stages', () => {
-    const g = newGame();
+    const g = freshGame();
     g.mission.completed = ['m1', 'm2', 'm3'];
     startMission(g, 'm4');
     advanceDialogue(g);
@@ -671,8 +671,8 @@ test('Diner Defense uses real combat and the van finale enforces all three stage
         Object.assign(g.player, { x: e.x - 24, y: e.y, h: 0 });
         for (let i = 0; i < 3; i++) {
             Object.assign(g.player, { x: e.x - 24, y: e.y, h: 0 });
-            pressKey(g, 'KeyF');
-            advance(g, 28);
+            tapKey(g, 'KeyF');
+            tick(g, 28);
         }
         assert.equal(e.dead, true);
     }
@@ -684,18 +684,18 @@ test('Diner Defense uses real combat and the van finale enforces all three stage
     assert.equal(van.type, 'armored');
     assert.equal(isSolid(g.world, van.x, van.y, 20), false);
     Object.assign(g.player, { x: van.x + 25, y: van.y });
-    pressKey(g, 'KeyE');
+    tapKey(g, 'KeyE');
     assert.equal(g.player.car, van);
     assert.equal(g.police.stars, 3);
     assert.equal(g.mission.active.stage, 'chase');
     Object.assign(van, JOB_POINTS.garage, { speed: 0, vx: 0, vy: 0 });
-    advance(g);
+    tick(g);
     assert.equal(g.mission.active.phase, 'active', 'cannot deliver with three stars');
     g.police.units = [];
     g.police.officers = [];
     g.police.spawnTimer = 10000;
     g.cars = [van];
-    advance(g, 3000);
+    tick(g, 3000);
     assert.equal(g.police.stars, 0);
     assert.equal(g.mission.active.phase, 'outro');
     assert.deepEqual(g.mission.completed, MISSIONS.map(m => m.id));
@@ -704,8 +704,8 @@ test('Diner Defense uses real combat and the van finale enforces all three stage
 });
 
 test('mission death and target wrecks fail without paying, and menus launch/retry jobs', () => {
-    const menu = action => screen.emit('click', { target: { closest: () => ({ dataset: { action } }) } });
-    const g = newGame();
+    const menu = action => screen.fire('click', { target: { closest: () => ({ dataset: { action } }) } });
+    const g = freshGame();
     g.mission.completed = ['m1', 'm2'];
     startMission(g, 'm3');
     advanceDialogue(g);
@@ -731,12 +731,12 @@ test('mission death and target wrecks fail without paying, and menus launch/retr
 test('all four capture autopilots advance real actors and preserve usable scenes', async () => {
     const { createShot } = await import('../game/src/shots.js');
     for (const name of ['cover', 'chase', 'mission', 'city']) {
-        const g = newGame();
+        const g = freshGame();
         g.capture = true;
         const shot = createShot(name, g);
         for (let i = 0; i < 900 && !shot.ready; i++) {
             shot.beforeStep();
-            advance(g);
+            tick(g);
             shot.afterStep();
         }
         assert.ok(shot.ready, name);

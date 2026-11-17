@@ -49,23 +49,23 @@ export class Renderer {
         ctx.translate(sx, sy);
         ctx.scale(z, z);
         const box = { x: -sx / z - 90, y: -sy / z - 100, w: w / z + 180, h: h / z + 200 };
-        const visible = (x, y, r = 50) => x > box.x - r && x < box.x + box.w + r && y > box.y - r && y < box.y + box.h + r;
+        const inView = (x, y, r = 50) => x > box.x - r && x < box.x + box.w + r && y > box.y - r && y < box.y + box.h + r;
 
-        this.water(ctx, game, box);
+        this.paintWater(ctx, game, box);
         ctx.drawImage(this.ground, 0, 0);
         ctx.globalAlpha = dusk;
         ctx.drawImage(this.sunsetGround, 0, 0);
         ctx.globalAlpha = 1;
 
-        this.drawSkids(ctx, game, visible);
-        this.drawSignals(ctx, game, visible);
-        const scene = this.gatherScene(game, box, visible);
-        if (dusk > 0.2) this.drawHeadlights(ctx, scene.cars, game, dusk);
-        this.drawShadows(ctx, scene, dusk);
-        this.drawObjects(ctx, game, scene, dusk, visible);
-        this.drawMarkers(ctx, game, visible);
-        this.drawProjectiles(ctx, game);
-        this.drawPlayerRing(ctx, game);
+        this.paintSkids(ctx, game, inView);
+        this.paintSignals(ctx, game, inView);
+        const scene = this.collect(game, box, inView);
+        if (dusk > 0.2) this.paintBeams(ctx, scene.cars, game, dusk);
+        this.paintShadows(ctx, scene, dusk);
+        this.paintActors(ctx, game, scene, dusk, inView);
+        this.paintPins(ctx, game, inView);
+        this.paintShots(ctx, game);
+        this.paintRing(ctx, game);
 
         // A warm sunset wash, restrained so lane paint, pedestrians and
         // health stay legible.
@@ -73,18 +73,18 @@ export class Renderer {
         ctx.fillRect(box.x - 100, box.y - 100, box.w + 200, box.h + 200);
         ctx.restore();
 
-        this.drawScreenFx(ctx, game, w, h);
+        this.paintFx(ctx, game, w, h);
         if (game.mode !== 'title') {
             drawHUD(ctx, game, this);
             if (game.mapOpen) drawFullMap(ctx, game, this);
         }
-        this.drawObjectiveArrow(ctx, game, w, h, sx, sy, z);
-        this.drawCrosshair(ctx, game);
+        this.paintArrow(ctx, game, w, h, sx, sy, z);
+        this.paintCrosshair(ctx, game);
     }
 
-    drawSkids(ctx, game, visible) {
+    paintSkids(ctx, game, inView) {
         for (const s of game.skids) {
-            if (!visible(s.x, s.y, 0)) continue;
+            if (!inView(s.x, s.y, 0)) continue;
             ctx.save();
             ctx.translate(s.x, s.y);
             ctx.rotate(s.h);
@@ -96,9 +96,9 @@ export class Renderer {
 
     // Painted signal boxes make traffic rules visible without cluttering
     // each intersection.
-    drawSignals(ctx, game, visible) {
+    paintSignals(ctx, game, inView) {
         for (const n of game.world.nodes) {
-            if (!visible(n.x, n.y, 20)) continue;
+            if (!inView(n.x, n.y, 20)) continue;
             for (const [dx, dy, horizontal] of [[-61, -61, true], [61, 61, true], [61, -61, false], [-61, 61, false]]) {
                 round(ctx, n.x + dx - 3, n.y + dy - 5, 6, 10, 2, '#4C605C');
                 ellipse(ctx, n.x + dx, n.y + dy - 1, 2, 2, signalGreen(game.time, n, horizontal) ? '#A4D5AC' : P.policeRed);
@@ -108,18 +108,18 @@ export class Renderer {
 
     // Cull everything to the camera box once, then hand the survivors to the
     // shadow / object passes.
-    gatherScene(game, box, visible) {
+    collect(game, box, inView) {
         const buildings = game.world.buildings.filter(b => b.x + b.w > box.x && b.x < box.x + box.w && b.y + b.h > box.y && b.y < box.y + box.h);
-        const props = game.world.props.filter(p => visible(p.x, p.y, 40));
-        const cars = game.cars.filter(c => visible(c.x, c.y, 50));
+        const props = game.world.props.filter(p => inView(p.x, p.y, 40));
+        const cars = game.cars.filter(c => inView(c.x, c.y, 50));
         const people = [...game.peds, ...game.enemies, ...game.police.officers];
         if (!game.player.car) people.push(game.player);
-        const humans = people.filter(p => visible(p.x, p.y, 20));
+        const humans = people.filter(p => inView(p.x, p.y, 20));
         return { buildings, props, cars, humans };
     }
 
     // Headlight cones, additive, only once the sun is low.
-    drawHeadlights(ctx, cars, game, dusk) {
+    paintBeams(ctx, cars, game, dusk) {
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
         for (const c of cars) {
@@ -136,7 +136,7 @@ export class Renderer {
         ctx.restore();
     }
 
-    drawShadows(ctx, scene, dusk) {
+    paintShadows(ctx, scene, dusk) {
         for (const b of scene.buildings) drawBuildingShadow(ctx, b, dusk);
         for (const p of scene.props) drawPropShadow(ctx, p, dusk);
         for (const c of scene.cars) drawCarShadow(ctx, c, dusk);
@@ -145,20 +145,20 @@ export class Renderer {
 
     // One y-sorted list: buildings, props, cars, people and pickups all
     // interleave so nearer things overlap farther ones correctly.
-    drawObjects(ctx, game, scene, dusk, visible) {
-        const objects = [];
+    paintActors(ctx, game, scene, dusk, inView) {
+        const queue = [];
         for (const b of scene.buildings) {
-            objects.push({ sort: b.y + b.h + 10, draw: () => drawBuilding(ctx, b, dusk) });
+            queue.push({ sort: b.y + b.h + 10, draw: () => drawBuilding(ctx, b, dusk) });
         }
         for (const p of scene.props) {
-            objects.push({ sort: p.y + (p.kind === 'container' ? 16 : 0), draw: () => drawProp(ctx, p, game.time, dusk) });
+            queue.push({ sort: p.y + (p.kind === 'container' ? 16 : 0), draw: () => drawProp(ctx, p, game.time, dusk) });
         }
         for (const c of scene.cars) {
             const depth = c.y + Math.abs(Math.sin(c.h)) * CARS[c.type].length * 0.5 + Math.abs(Math.cos(c.h)) * CARS[c.type].width * 0.5;
-            objects.push({ sort: depth, draw: () => drawCar(ctx, c, game.time, dusk) });
+            queue.push({ sort: depth, draw: () => drawCar(ctx, c, game.time, dusk) });
         }
         for (const p of scene.humans) {
-            objects.push({
+            queue.push({
                 sort: p.y + 6,
                 draw: () => {
                     ctx.save();
@@ -173,36 +173,36 @@ export class Renderer {
             });
         }
         for (const p of game.world.pickups) {
-            if (p.active && visible(p.x, p.y, 20)) {
-                objects.push({ sort: p.y + 8, draw: () => drawPickup(ctx, p, game.time) });
+            if (p.active && inView(p.x, p.y, 20)) {
+                queue.push({ sort: p.y + 8, draw: () => drawPickup(ctx, p, game.time) });
             }
         }
-        objects.sort((a, b) => a.sort - b.sort);
-        for (const o of objects) o.draw();
+        queue.sort((a, b) => a.sort - b.sort);
+        for (const o of queue) o.draw();
     }
 
     // Shop pins, then the mission / waypoint pin with its golden light beam.
-    drawMarkers(ctx, game, visible) {
+    paintPins(ctx, game, inView) {
         for (const s of game.world.services) {
-            if (visible(s.x, s.y, 60)) {
-                this.marker(ctx, s.x, s.y, s.icon, s.short, game.time, dist(s, game.player) < 140, P.teal);
+            if (inView(s.x, s.y, 60)) {
+                this.pin(ctx, s.x, s.y, s.icon, s.short, game.time, dist(s, game.player) < 140, P.teal);
             }
         }
         const marker = game.mission.marker || game.waypoint;
         if (!marker) return;
-        if (game.mission.marker && visible(marker.x, marker.y, 80)) {
+        if (game.mission.marker && inView(marker.x, marker.y, 80)) {
             const beam = ctx.createLinearGradient(0, marker.y - 115, 0, marker.y);
             beam.addColorStop(0, '#F0B42900');
             beam.addColorStop(1, '#F0B42945');
             ctx.fillStyle = beam;
             ctx.fillRect(marker.x - 17, marker.y - 115, 34, 115);
         }
-        this.marker(ctx, marker.x, marker.y, game.mission.marker ? '!' : '◆', marker.label || 'WAYPOINT', game.time, true, P.mango);
+        this.pin(ctx, marker.x, marker.y, game.mission.marker ? '!' : '◆', marker.label || 'WAYPOINT', game.time, true, P.mango);
     }
 
     // Muzzle flash, bullet tracers, particles and floating text, then the
     // mango ring that marks Jax while he is on foot.
-    drawProjectiles(ctx, game) {
+    paintShots(ctx, game) {
         if (game.player.car && game.player.flash > 0) {
             const a = game.player.fireHeading ?? game.player.h;
             const x = game.player.x + Math.cos(a) * 25;
@@ -233,7 +233,7 @@ export class Renderer {
         }
     }
 
-    drawPlayerRing(ctx, game) {
+    paintRing(ctx, game) {
         if (game.player.car) return;
         const p = game.player;
         ctx.strokeStyle = P.mango;
@@ -246,7 +246,7 @@ export class Renderer {
     }
 
     // Screen-space vignette and the red damage flash, after the world pass.
-    drawScreenFx(ctx, game, w, h) {
+    paintFx(ctx, game, w, h) {
         const vignette = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.32, w / 2, h / 2, Math.max(w, h) * 0.76);
         vignette.addColorStop(0, '#18313A00');
         vignette.addColorStop(1, '#1924393A');
@@ -260,7 +260,7 @@ export class Renderer {
 
     // When the objective is off-screen, point at it from the screen edge
     // with the distance in metres.
-    drawObjectiveArrow(ctx, game, w, h, sx, sy, z) {
+    paintArrow(ctx, game, w, h, sx, sy, z) {
         if (!game.mission.marker || game.mode !== 'play' || game.mapOpen || game.mission.dialogue) return;
         const target = game.mission.marker;
         const tx = sx + target.x * z;
@@ -278,7 +278,7 @@ export class Renderer {
         text(ctx, `${Math.floor(dist(game.player, target))} m`, ax, ay + 25, 10, P.mango, 'center');
     }
 
-    drawCrosshair(ctx, game) {
+    paintCrosshair(ctx, game) {
         if (!game.input.mouse.aim || game.mode !== 'play' || game.mapOpen || game.mission.dialogue) return;
         const m = game.input.mouse;
         ctx.strokeStyle = P.paper;
@@ -298,7 +298,7 @@ export class Renderer {
 
     // A bobbing map pin: ground ring, coloured badge with an icon, a
     // pointer tip and an optional label plate.
-    marker(ctx, x, y, icon, label, time, showLabel, color) {
+    pin(ctx, x, y, icon, label, time, showLabel, color) {
         const bob = Math.sin(time * 3) * 2;
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
@@ -319,7 +319,7 @@ export class Renderer {
 
     // The bay: a dusk-blended gradient, drifting wave lines, sparkling
     // foam, and two little moored boats that bob with the clock.
-    water(ctx, game, box) {
+    paintWater(ctx, game, box) {
         const x = game.world.water;
         const t = game.time;
         const g = ctx.createLinearGradient(x, 0, x + 460, 0);
