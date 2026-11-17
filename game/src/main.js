@@ -32,8 +32,8 @@ window.__shotReady = false;
 
 // --- the game object -------------------------------------------------------
 // Everything the simulation touches lives on this one object: the world,
-// the actors, the mission state, particles, the camera, stats, and the small
-// verbs (notify / crime / burst / floatText) the other modules call.
+// the actors, the mission state, particles, the camera, stats, and the
+// small verbs (notify / crime / burst / floatText) the other modules call.
 
 export function createGame(seed, save = null) {
     const world = makeWorld(seed);
@@ -118,13 +118,13 @@ export function createGame(seed, save = null) {
 // One 1/60s step. The clock starts at 17:10 and runs slowly toward dusk;
 // dialogue freezes the world until the player advances it.
 
-function tickClock(g, dt) {
+function advanceClock(g, dt) {
     const minutes = (1030 + g.time * 0.32) % 1440;
     g.clock = `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(Math.floor(minutes % 60)).padStart(2, '0')}`;
     g.dusk = minutes < 360 ? 0.9 : minutes < 480 ? clamp(1 - (minutes - 360) / 120, 0, 1) : clamp((minutes - 960) / 180, 0, 1);
 }
 
-function fadeFx(g, dt) {
+function decayEffects(g, dt) {
     g.shake = Math.max(0, g.shake - dt * 15);
     g.damageFlash = Math.max(0, g.damageFlash - dt);
     for (const p of g.particles) {
@@ -148,7 +148,7 @@ export function updateGame(g, dt = 1 / 60) {
         return;
     }
     g.time += dt;
-    tickClock(g, dt);
+    advanceClock(g, dt);
     updatePlayer(g, dt);
     if (g.mode !== 'play') return;
     updatePolice(g, dt);
@@ -160,7 +160,7 @@ export function updateGame(g, dt = 1 / 60) {
     if (g.mode !== 'play') return;
     updateMissions(g, dt);
     updateCamera(g, dt);
-    fadeFx(g, dt);
+    decayEffects(g, dt);
     if (g.waypoint && Math.hypot(g.player.x - g.waypoint.x, g.player.y - g.waypoint.y) < 50) {
         g.notify('WAYPOINT REACHED', g.waypoint.label || 'Take a look around.');
         g.waypoint = null;
@@ -173,7 +173,7 @@ export function updateGame(g, dt = 1 / 60) {
 // A fresh start rebuilds the world; recovery keeps cash/ammo/progress and
 // drops Jax at the clinic, patched up after a bust or a wipe-out.
 
-function keepProgress() {
+function snapshotProgress() {
     return {
         cash: game.player.cash, ammo: game.player.ammo, best: game.best,
         missions: [...game.mission.completed], cars: [...game.unlockedCars]
@@ -210,7 +210,7 @@ function begin(continued = false, recovery = null) {
 }
 
 function beginJob(id) {
-    const progress = keepProgress();
+    const progress = snapshotProgress();
     begin(false, progress);
     startMission(game, id);
     game.save();
@@ -294,7 +294,7 @@ function paintMenu(mode) {
     screen.querySelector('.primary')?.focus({ preventScroll: true });
 }
 
-function holdGame() {
+function pauseGame() {
     if (game.mode !== 'play') return;
     game.mapOpen = false;
     game.mode = 'pause';
@@ -303,7 +303,7 @@ function holdGame() {
     paintMenu('pause');
 }
 
-function backToBay() {
+function resumeGame() {
     game.mode = 'play';
     screen.classList.add('hidden');
     input.clear();
@@ -311,7 +311,7 @@ function backToBay() {
     audio.unlock();
 }
 
-function toTitle() {
+function goTitle() {
     game.save();
     game.mode = 'title';
     game.mapOpen = false;
@@ -320,7 +320,7 @@ function toTitle() {
     paintMenu('title');
 }
 
-function leaveJobs() {
+function exitJobs() {
     if (jobsReturn === 'title') {
         game.mode = 'title';
         paintMenu('title');
@@ -341,12 +341,12 @@ screen.addEventListener('click', e => {
         if (isUnlocked(game.mission.completed, id)) beginJob(id);
     }
     if (action === 'retry-job') beginJob(game.mission.active.id);
-    if (action === 'free-roam') begin(false, keepProgress());
-    if (action === 'jobs-back') leaveJobs();
+    if (action === 'free-roam') begin(false, snapshotProgress());
+    if (action === 'jobs-back') exitJobs();
     if (action === 'new') begin();
     if (action === 'continue') begin(true);
-    if (action === 'resume') backToBay();
-    if (action === 'title') toTitle();
+    if (action === 'resume') resumeGame();
+    if (action === 'title') goTitle();
     if (action === 'recover') {
         const p = game.player;
         begin(false, {
@@ -381,10 +381,10 @@ canvas.addEventListener('pointerdown', e => {
 
 window.addEventListener('resize', () => renderer.resize());
 window.addEventListener('blur', () => {
-    if (!shot) holdGame();
+    if (!shot) pauseGame();
 });
 document.addEventListener('visibilitychange', () => {
-    if (document.hidden && !shot) holdGame();
+    if (document.hidden && !shot) pauseGame();
 });
 window.addEventListener('pagehide', () => {
     if (game.mode !== 'title') game.save();
@@ -462,11 +462,11 @@ function handleGlobalKeys() {
             game.mapOpen = false;
             input.clear();
         } else if (game.mode === 'play') {
-            holdGame();
+            pauseGame();
         } else if (game.mode === 'pause') {
-            backToBay();
+            resumeGame();
         } else if (game.mode === 'missions') {
-            leaveJobs();
+            exitJobs();
         }
     }
     if (input.tap('Tab') && game.mode === 'play') {

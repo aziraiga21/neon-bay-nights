@@ -1,5 +1,5 @@
-// Neon Bay Nights — cars: arcade physics, lane-following traffic,
-// parked rows, collisions, damage and smoke.
+// Neon Bay Nights — vehicles: arcade driving, lane traffic, parked rows,
+// stealing, car-to-car hits, damage and smoke.
 import { CARS, CAR_COLORS, PALETTE as P, ROADS_X, ROADS_Y, WORLD, clamp, angleDelta, dist } from './config.js';
 import { nearestNode, moveCircle, signalGreen, lineClear, isSolid, roadDistance } from './world.js';
 import { missionEvent } from './missions.js';
@@ -62,12 +62,12 @@ export function populateVehicles(game) {
     game.cars = cars;
 }
 
-// --- traffic brains --------------------------------------------------------
+// --- traffic drivers -------------------------------------------------------
 // A traffic car follows its lane from one junction to the next, aiming at a
 // look-ahead point so it stays in lane instead of cutting the diagonal.
 // It slows for corners, red lights, the car ahead, and pedestrians on foot.
 
-function aimPoint(game, c, from, to, heading) {
+function lookAhead(game, c, from, to, heading) {
     const end = { x: to.x - Math.sin(heading) * WORLD.lane, y: to.y + Math.cos(heading) * WORLD.lane };
     const start = { x: from.x - Math.sin(heading) * WORLD.lane, y: from.y + Math.cos(heading) * WORLD.lane };
     const fx = Math.cos(heading);
@@ -78,7 +78,7 @@ function aimPoint(game, c, from, to, heading) {
     return { target: { x: start.x + fx * look, y: start.y + fy * look }, remaining: dist(c, end) };
 }
 
-function driveTraffic(game, c, dt) {
+function steerTraffic(game, c, dt) {
     if (!c.route) {
         const n = nearestNode(game.world, c.x, c.y);
         c.route = { from: n.id, to: game.rng.pick(n.links) };
@@ -86,11 +86,11 @@ function driveTraffic(game, c, dt) {
     const from = game.world.nodes[c.route.from];
     const to = game.world.nodes[c.route.to];
     const heading = Math.atan2(to.y - from.y, to.x - from.x);
-    const { target, remaining } = aimPoint(game, c, from, to, heading);
+    const { target, remaining } = lookAhead(game, c, from, to, heading);
     if (remaining < 29) {
         const options = to.links.filter(id => id !== from.id);
         c.route = { from: to.id, to: game.rng.pick(options.length ? options : to.links) };
-        return driveTraffic(game, c, dt);
+        return steerTraffic(game, c, dt);
     }
     let desired = c.cruise || 105;
     const angle = Math.atan2(target.y - c.y, target.x - c.x);
@@ -152,15 +152,15 @@ export function updateVehicles(game, dt) {
             c.braking = axis.y > 0 && c.speed > 8;
             c.handbrake = game.input.down('ShiftLeft', 'ShiftRight');
         } else if (c.ai === 'traffic' || c.ai === 'patrol') {
-            driveTraffic(game, c, dt);
+            steerTraffic(game, c, dt);
         } else if (c.ai !== 'police') {
             c.throttle = 0;
             c.steer = 0;
             c.braking = true;
         }
-        advanceCar(game, c, dt, driven);
+        stepCar(game, c, dt, driven);
     }
-    settleHits(game);
+    resolveCollisions(game);
     if (game.player.car) {
         game.player.x = game.player.car.x;
         game.player.y = game.player.car.y;
@@ -169,7 +169,7 @@ export function updateVehicles(game, dt) {
 
 // Symmetric impulses: ramming, traffic avoidance and wrecks all live in the
 // same physical world, so both cars in a hit share the push.
-function settleHits(game) {
+function resolveCollisions(game) {
     for (let i = 0; i < game.cars.length; i++) {
         for (let j = i + 1; j < game.cars.length; j++) {
             const a = game.cars[i];
@@ -215,7 +215,7 @@ function settleHits(game) {
 // speed, and velocity eases toward the heading (grip) so the car drifts
 // instead of snapping sideways. The handbrake loosens the grip.
 
-function advanceCar(game, c, dt, driven) {
+function stepCar(game, c, dt, driven) {
     const def = CARS[c.type];
     const oldSpeed = c.speed;
     if (c.braking) {
@@ -253,7 +253,7 @@ function advanceCar(game, c, dt, driven) {
             }
         }
     }
-    dropSkids(game, c, dt, driven);
+    leaveSkidMarks(game, c, dt, driven);
     if (driven) {
         game.stats.distance += Math.abs(c.speed) * dt;
         game.stats.topSpeed = Math.max(game.stats.topSpeed, Math.abs(c.speed) * 0.32);
@@ -269,7 +269,7 @@ function advanceCar(game, c, dt, driven) {
     if (c.type === 'police' && c.ai === 'patrol' && driven) c.ai = 'parked';
 }
 
-function dropSkids(game, c, dt, driven) {
+function leaveSkidMarks(game, c, dt, driven) {
     const slip = Math.abs(angleDelta(c.h, Math.atan2(c.vy, c.vx)));
     if (!driven || Math.abs(c.speed) <= 95) return;
     if (!(Math.abs(c.steer) > 0.65 || c.handbrake || slip > 0.35)) return;

@@ -1,13 +1,15 @@
-// Neon Bay Nights — every visual is painted by code at runtime.
-// No image files, no downloads: the city ground is baked once per world
-// (a daylight sheet and a dusk sheet), while buildings, cars, people and
-// street props are drawn live every frame from the same palette.
+// Neon Bay Nights — all art is code. Nothing is loaded from disk: the
+// ground is rendered once per world into a daylight and a dusk canvas,
+// while buildings, cars, people and props are painted live each frame
+// from one shared palette. Facing is east-first; heading 0 is east and
+// turns clockwise, light comes from the north-west, shadows fall
+// (+5, +6) and stretch a little further at dusk.
 import { PALETTE as P, CARS, ROADS_X, ROADS_Y } from './config.js';
 import { createRandom } from './random.js';
 
-// --- tiny drawing verbs ----------------------------------------------------
-// These four are the shared vocabulary for hud.js and render.js as well,
-// so their names and signatures stay exactly as they are.
+// --- shared drawing verbs --------------------------------------------------
+// hud.js and render.js use these too, so the four names and their call
+// shapes are part of the public interface and never change.
 
 export function round(ctx, x, y, w, h, r, fill, stroke) {
     ctx.beginPath();
@@ -55,8 +57,8 @@ export function text(ctx, str, x, y, size, color, align = 'left', weight = 'bold
     ctx.fillText(str, x, y);
 }
 
-// Small local helpers for the ground painter below.
-function dashLine(ctx, x1, y1, x2, y2, style, dash) {
+// Local helpers used only by the ground painter.
+function ruledLine(ctx, x1, y1, x2, y2, style, dash) {
     ctx.strokeStyle = style;
     ctx.setLineDash(dash || []);
     ctx.beginPath();
@@ -66,18 +68,20 @@ function dashLine(ctx, x1, y1, x2, y2, style, dash) {
     ctx.setLineDash([]);
 }
 
-function speckle(ctx, rng, count, pickSpot, shades) {
+function scatter(ctx, rng, count, place, shades) {
     for (let n = 0; n < count; n++) {
-        const [px, py, w, h] = pickSpot(n);
+        const [px, py, w, h] = place(n);
         ctx.fillStyle = shades[n % shades.length];
         ctx.fillRect(px, py, w, h);
     }
 }
 
-// --- the static ground sheet -----------------------------------------------
-// One big canvas holding land, lots, parks, roads, lane paint, crossings,
-// street names, the seawall, the beach and the jetties. Dusk swaps the
-// asphalt and sidewalk tones; everything else is painted identically.
+// --- the baked ground sheet ------------------------------------------------
+// One canvas holding the land, block paving, parks, roads with lane paint,
+// crossings, street names, seawall, beach and jetties. Dusk only swaps the
+// asphalt and sidewalk tones; every other pass is identical. The seeded
+// RNG calls must stay in the same order as before (park petals, then
+// asphalt scuffs, then sand grains) so the ground looks the same.
 
 export function makeGround(world, dusk = false) {
     const asphalt = dusk ? P.asphaltDusk : P.asphalt;
@@ -88,13 +92,14 @@ export function makeGround(world, dusk = false) {
     const ctx = sheet.getContext('2d');
     const rng = createRandom(world.seed + 41);
 
-    // Scrub west of the bay line, then the sidewalk field the grid sits on.
+    // Bay water lives in the renderer; here the west edge is a scrub field
+    // and the rest of the city sits on a sidewalk field.
     ctx.fillStyle = '#B3BEA7';
     ctx.fillRect(0, 0, world.water, sheet.height);
     ctx.fillStyle = walk;
     ctx.fillRect(70, 70, 2700, 2700);
 
-    // Block paving: alternating warm tones read as courtyards between houses.
+    // Courtyard paving between the roads, alternating warm tones by block.
     for (let j = 0; j < 6; j++) {
         for (let i = 0; i < 6; i++) {
             const px = ROADS_X[i] + 76;
@@ -107,7 +112,7 @@ export function makeGround(world, dusk = false) {
         }
     }
 
-    // Parks: lawn slab, crossing paths, a round pond, scattered petals.
+    // Parks: lawn, crossing paths, a round pond, petals kept clear of it.
     for (const park of world.parks) {
         round(ctx, park.x - 5, park.y - 5, park.w + 10, park.h + 10, 9, P.grass);
         ctx.fillStyle = walk;
@@ -126,7 +131,7 @@ export function makeGround(world, dusk = false) {
         }
     }
 
-    // Roads: pale curb lip framing each asphalt strip, vertical then horizontal.
+    // Roads: a pale curb lip framing each asphalt strip, verticals first.
     for (const x of ROADS_X) {
         ctx.fillStyle = P.curb;
         ctx.fillRect(x - 55, 120, 110, 2540);
@@ -165,30 +170,30 @@ export function makeGround(world, dusk = false) {
     }
 
     // Seeded asphalt scuffs: faint dark and light patches along the roads.
-    speckle(ctx, rng, 1400, n => {
+    scatter(ctx, rng, 1400, n => {
         const vertical = rng() < 0.5;
         const px = vertical ? rng.pick(ROADS_X) + rng.range(-48, 48) : rng.range(120, 2660);
         const py = vertical ? rng.range(120, 2660) : rng.pick(ROADS_Y) + rng.range(-48, 48);
         return [px, py, rng.range(1, 12), rng.range(1, 5)];
     }, ['#72747A40', '#424B5030', '#424B5030', '#424B5030']);
 
-    // Lane paint: dashed yellow centre line with pale edge lines, stopping
-    // short of each junction so the intersections stay readable.
+    // Lane paint: dashed yellow centre with pale edge lines, stopping short
+    // of each junction so the intersections stay readable.
     ctx.lineWidth = 1;
     for (const x of ROADS_X) {
         for (let j = 0; j < 6; j++) {
             const top = ROADS_Y[j] + 65;
             const bottom = ROADS_Y[j + 1] - 65;
-            dashLine(ctx, x, top, x, bottom, P.yellow, [17, 17]);
-            for (const s of [-1, 1]) dashLine(ctx, x + s * 45, top, x + s * 45, bottom, '#E8E4D882');
+            ruledLine(ctx, x, top, x, bottom, P.yellow, [17, 17]);
+            for (const s of [-1, 1]) ruledLine(ctx, x + s * 45, top, x + s * 45, bottom, '#E8E4D882');
         }
     }
     for (const y of ROADS_Y) {
         for (let i = 0; i < 6; i++) {
             const left = ROADS_X[i] + 65;
             const right = ROADS_X[i + 1] - 65;
-            dashLine(ctx, left, y, right, y, P.yellow, [17, 17]);
-            for (const s of [-1, 1]) dashLine(ctx, left, y + s * 45, right, y + s * 45, '#E8E4D882');
+            ruledLine(ctx, left, y, right, y, P.yellow, [17, 17]);
+            for (const s of [-1, 1]) ruledLine(ctx, left, y + s * 45, right, y + s * 45, '#E8E4D882');
         }
     }
 
@@ -211,14 +216,15 @@ export function makeGround(world, dusk = false) {
         ctx.strokeRect(node.x - 14, node.y - 14, 28, 28);
     }
 
-    // Painted street names on the asphalt, one per named avenue.
+    // Street names painted on the asphalt, one per named avenue.
     for (const y of [640, 1408, 2176]) {
         const name = y === 1408 ? 'OCEAN DRIVE' : y === 640 ? 'SOLANA AVE' : 'MARLIN WAY';
         for (const x of [810, 1570, 2330]) text(ctx, name, x, y + 40, 8, '#E8E4D884', 'center');
     }
 
     // The coast: seawall, promenade boards and warm sand. The bay water
-    // itself is painted by the renderer; the sand and timber jetties live here.
+    // itself is painted by the renderer; the sand and timber jetties live
+    // here.
     ctx.fillStyle = P.seawall;
     ctx.fillRect(world.coast - 13, 60, 24, 2760);
     ctx.fillStyle = P.sand;
@@ -260,7 +266,7 @@ export function makeGround(world, dusk = false) {
     return sheet;
 }
 
-// Soft offset shadow under a building; the dusk value stretches it further.
+// A soft offset shadow under a building; the dusk value stretches it out.
 export function drawBuildingShadow(ctx, b, dusk) {
     ctx.fillStyle = '#283E3D35';
     ctx.fillRect(b.x + 5 + dusk * 5, b.y + 6 + dusk, b.w, b.h + 7);
@@ -268,10 +274,10 @@ export function drawBuildingShadow(ctx, b, dusk) {
 
 // --- buildings -------------------------------------------------------------
 // A shallow south facade under a roof cap reads as height from above.
-// Hotels get glass + pool, the diner its awning and sign, warehouses
+// Hotels get glass and a pool, the diner its awning and sign, warehouses
 // corrugated siding; everything else gets an AC unit and a shop front.
 
-function shellAndRoof(ctx, b, glass, industrial) {
+function roofAndShell(ctx, b, glass, industrial) {
     const { x, y, w, h } = b;
     round(ctx, x, y + 10, w, h, 2, b.wall);
     ctx.fillStyle = glass ? P.glassDeep : b.wall;
@@ -305,7 +311,7 @@ function shellAndRoof(ctx, b, glass, industrial) {
     }
 }
 
-function hotelFace(ctx, b) {
+function hotelFacade(ctx, b) {
     const { x, y, w, h } = b;
     ctx.fillStyle = P.glass;
     ctx.fillRect(x + 8, y + 8, w - 16, 21);
@@ -332,7 +338,7 @@ function hotelFace(ctx, b) {
     }
 }
 
-function dinerFace(ctx, b) {
+function dinerFacade(ctx, b) {
     const { x, y, w, h } = b;
     round(ctx, x + 17, y + 14, w - 34, h - 46, 6, '#1C7580');
     ctx.strokeStyle = '#69C6C0';
@@ -353,7 +359,7 @@ function dinerFace(ctx, b) {
     }
 }
 
-function shopFace(ctx, b) {
+function shopFacade(ctx, b) {
     const { x, y, w } = b;
     const ax = x + w - 36;
     const ay = y + 19;
@@ -381,10 +387,10 @@ export function drawBuilding(ctx, b, dusk = 0) {
     const { x, y, w, h } = b;
     const glass = b.kind === 'hotel';
     const industrial = b.kind === 'warehouse' || b.kind === 'garage';
-    shellAndRoof(ctx, b, glass, industrial);
-    if (glass) hotelFace(ctx, b);
-    else if (b.kind === 'diner') dinerFace(ctx, b);
-    else shopFace(ctx, b);
+    roofAndShell(ctx, b, glass, industrial);
+    if (glass) hotelFacade(ctx, b);
+    else if (b.kind === 'diner') dinerFacade(ctx, b);
+    else shopFacade(ctx, b);
 
     // South-facing windows; at dusk some of them glow warm.
     const nwin = Math.max(2, Math.floor(w / 28));
@@ -445,7 +451,7 @@ export function drawCarShadow(ctx, c, dusk) {
     ctx.restore();
 }
 
-function carWheelsAndShell(ctx, c, l, w) {
+function carBodyAndWheels(ctx, c, l, w) {
     const body = c.wreck ? '#6A655F' : c.color;
     for (const x of [-l * 0.31, l * 0.29]) {
         for (const y of [-w / 2 - 1, w / 2 - 2]) round(ctx, x - 4, y, 9, 4, 1, P.tire);
@@ -463,7 +469,7 @@ function carWheelsAndShell(ctx, c, l, w) {
     return body;
 }
 
-function carGlasswork(ctx, c, body, l, w) {
+function carGlass(ctx, c, body, l, w) {
     if (c.type === 'van' || c.type === 'armored') {
         round(ctx, -l / 2 + 4, -w / 2 + 3, l * 0.62, w - 6, 2, body);
         ctx.strokeStyle = '#1C19163A';
@@ -491,7 +497,7 @@ function carGlasswork(ctx, c, body, l, w) {
     }
 }
 
-function carTrim(ctx, c, time, dusk, l, w) {
+function carLightsAndTrim(ctx, c, time, dusk, l, w) {
     if (c.type === 'armored') {
         round(ctx, -19, -8, 25, 16, 2, '#637F7C', P.ink);
         for (const x of [-16, 2]) {
@@ -530,7 +536,7 @@ function carTrim(ctx, c, time, dusk, l, w) {
     }
 }
 
-function carWear(ctx, c, def) {
+function carDamage(ctx, c, def) {
     if (c.hp < def.hp * 0.45) {
         ctx.strokeStyle = '#675652';
         ctx.lineWidth = 1;
@@ -559,10 +565,10 @@ export function drawCar(ctx, c, time, dusk = 0) {
     ctx.save();
     ctx.translate(c.x, c.y);
     ctx.rotate(c.h);
-    const body = carWheelsAndShell(ctx, c, l, w);
-    carGlasswork(ctx, c, body, l, w);
-    carTrim(ctx, c, time, dusk, l, w);
-    carWear(ctx, c, def);
+    const body = carBodyAndWheels(ctx, c, l, w);
+    carGlass(ctx, c, body, l, w);
+    carLightsAndTrim(ctx, c, time, dusk, l, w);
+    carDamage(ctx, c, def);
     ctx.restore();
 }
 
@@ -676,7 +682,7 @@ function palmTree(ctx, p, time) {
     ellipse(ctx, tx, ty, 4 * s, 3 * s, '#7EAF79');
 }
 
-function streetLamp(ctx, p, dusk) {
+function lampPost(ctx, p, dusk) {
     const { x, y } = p;
     ellipse(ctx, x, y, 4, 3, '#8D938C');
     ctx.strokeStyle = '#647C78';
@@ -701,7 +707,7 @@ export function drawProp(ctx, p, time, dusk) {
     if (p.kind === 'palm') {
         palmTree(ctx, p, time);
     } else if (p.kind === 'lamp') {
-        streetLamp(ctx, p, dusk);
+        lampPost(ctx, p, dusk);
     } else if (p.kind === 'bench') {
         ctx.save();
         ctx.translate(x, y);
