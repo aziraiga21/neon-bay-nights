@@ -14,7 +14,7 @@ const SIGHT_CAR = 520;
 const SIGHT_FOOT = 300;
 const WITNESS_CAR = 320;
 const WITNESS_FOOT = 260;
-const MAX_UNITS = 3;
+const MAX_UNITS = 5;
 const OFFICER_SPEED = 104;
 const BUST_RATE = 0.55;
 const BUST_COOL = 0.25;
@@ -179,7 +179,8 @@ function sendCruiser(game) {
     let best = Infinity;
     for (const node of game.world.nodes) {
         const d = dist(node, p);
-        if (d >= SPAWN_FAR && d <= SPAWN_NEAR && d < best) {
+        if (d >= SPAWN_FAR && d <= SPAWN_NEAR && d < best
+            && !game.cars.some(c => dist(c,node)<48)) {
             spot = node;
             best = d;
         }
@@ -187,7 +188,7 @@ function sendCruiser(game) {
     if (!spot) {
         for (const node of game.world.nodes) {
             const d = dist(node, p);
-            if (d > 400 && d < best) {
+            if (d > 400 && d < best && !game.cars.some(c => dist(c,node)<48)) {
                 spot = node;
                 best = d;
             }

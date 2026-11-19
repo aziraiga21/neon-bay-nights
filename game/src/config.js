@@ -41,6 +41,8 @@ export const CARS = {
         name: 'NBPD Interceptor', length: 48, width: 23, max: 350, accel: 225, grip: 8.5, hp: 180
     }
 };
+export const GARAGE_PRICES = {sedan:300, taxi:450, van:550, sports:1200};
+export const TAPE_COUNT = 10;
 export const TUNE = {
     walk: 105, sprint: 172, playerRadius: 7, enterDistance: 53, shotInterval: .26, maxAmmo: 120, heatThresholds: [0, .9, 3.2, 6.2, 10.5, 16], loseSight: 10
 };

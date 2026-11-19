@@ -2,12 +2,12 @@
 // This module owns the single live game: title / play / pause / missions /
 // mission-failed / ending / over, plus the ?shot= capture flow and the
 // window.__neon debug handle the screenshot script drives.
-import { PALETTE as P, clamp, money } from './config.js';
-import { createRandom } from './random.js';
+import { PALETTE as P, CARS, GARAGE_PRICES, clamp, money } from './config.js';
+import { CITY_SEED, createRandom } from './random.js';
 import { makeWorld } from './world.js';
 import { Input } from './input.js';
 import { Audio } from './audio.js';
-import { makePlayer, updatePlayer } from './player.js';
+import { makePlayer, updatePlayer, collectGarageCar } from './player.js';
 import { populateVehicles, updateVehicles } from './vehicles.js';
 import { populatePeds, updatePeds, addPed } from './pedestrians.js';
 import { makePolice, updatePolice, reportCrime } from './police.js';
@@ -20,7 +20,7 @@ import { createShot } from './shots.js';
 const canvas = document.querySelector('#game');
 const screen = document.querySelector('#screen');
 const params = new URLSearchParams(location.search);
-const seed = Number.isFinite(Number(params.get('seed'))) && params.has('seed') ? Number(params.get('seed')) : 1706;
+const seed = Number.isFinite(Number(params.get('seed'))) && params.has('seed') ? Number(params.get('seed')) : CITY_SEED;
 const captureMode = ['cover', 'chase', 'mission', 'city'].includes(params.get('shot'));
 const input = new Input(canvas);
 const audio = new Audio(readSave()?.settings);
@@ -42,10 +42,11 @@ export function createGame(seed, save = null) {
         mode: 'play', time: 0, clock: '17:10', dusk: 0.4,
         player: makePlayer(world, save), cars: [], peds: [], enemies: [],
         police: makePolice(), mission: createMissionState(save?.missions),
+        tapes:new Set(save?.tapes || []), fare:null, rosaVisit:!!save?.rosaVisit,
         unlockedCars: new Set(save?.unlockedCars || []), best: save?.best || 0,
         particles: [], skids: [], floats: [], bullets: [],
         camera: { x: world.spawn.x, y: world.spawn.y, zoom: 1.22 },
-        stats: { stolen: 0, shots: 0, crashes: 0, distance: 0, topSpeed: 0, earned: 0, escapes: 0, reputation: 0 },
+        stats: { stolen: 0, shots: 0, crashes: 0, distance: 0, topSpeed: 0, earned: 0, escapes: 0, reputation: save?.reputation || 0 },
         shake: 0, damageFlash: 0, toast: null, waypoint: null, mapOpen: false,
         lastSave: 0, saveError: false, manual: false,
         notify(title, sub = '', color = P.mango) {
@@ -107,6 +108,7 @@ export function createGame(seed, save = null) {
             if (this.particles.length > 500) this.particles.splice(0, this.particles.length - 500);
         }
     };
+    for(const item of world.pickups) if(g.tapes.has(item.id)) item.active=false;
     populateVehicles(g);
     populatePeds(g);
     populateEnemies(g);
@@ -175,19 +177,20 @@ export function updateGame(g, dt = 1 / 60) {
 function snapshotProgress() {
     return {
         cash: game.player.cash, ammo: game.player.ammo, best: game.best,
-        missions: [...game.mission.completed], cars: [...game.unlockedCars]
+        missions: [...game.mission.completed], unlockedCars: [...game.unlockedCars],
+        tapes:[...game.tapes], reputation:game.stats.reputation, rosaVisit:game.rosaVisit
     };
 }
 
 function begin(continued = false, recovery = null) {
     const save = continued ? readSave() : null;
-    game = createGame(seed, save);
+    game = createGame(seed, recovery || save);
     if (recovery) {
         game.player.cash = recovery.cash;
         game.player.ammo = Math.max(24, recovery.ammo);
         game.best = recovery.best;
         game.mission.completed = recovery.missions;
-        game.unlockedCars = new Set(recovery.cars);
+
         game.player.x = 440;
         game.player.y = 968;
         game.camera.x = 440;
@@ -233,7 +236,7 @@ function openJobs() {
     paintMenu('missions');
 }
 
-const controls = `<div class="controls"><div><kbd>WASD</kbd> / <kbd>↑↓←→</kbd> Move / drive</div><div><kbd>E</kbd> Enter, exit, steal / use shop</div><div><kbd>SHIFT</kbd> Sprint / handbrake · <kbd>R</kbd> Repair</div><div><kbd>SPACE</kbd> Fire · Mouse to aim & fire</div><div><kbd>F</kbd> Punch · <kbd>TAB</kbd> City map</div><div><kbd>ESC</kbd> / <kbd>P</kbd> Pause · <kbd>M</kbd> Mute</div></div>`;
+const controls = `<div class="controls"><div><kbd>WASD</kbd> / <kbd>↑↓←→</kbd> Move / drive</div><div><kbd>E</kbd> Enter, exit, steal / use shop</div><div><kbd>SHIFT</kbd> Sprint / handbrake · <kbd>R</kbd> Repair</div><div><kbd>SPACE</kbd> Fire · Mouse to aim & fire</div><div><kbd>T</kbd> Taxi dispatch · <kbd>G</kbd> Garage on foot</div><div><kbd>F</kbd> Punch · <kbd>TAB</kbd> City map</div><div><kbd>ESC</kbd> / <kbd>P</kbd> Pause · <kbd>M</kbd> Mute</div></div>`;
 
 function titleMarkup() {
     const saved = readSave();
@@ -258,6 +261,15 @@ function jobsMarkup() {
         return `<button data-action="job-${m.id}" ${unlocked ? '' : 'disabled'}><span class="job-number">0${i + 1}</span><span><strong>${m.title}</strong><small>${m.summary}</small></span><span class="job-reward">${state}<small>${note}</small></span></button>`;
     }).join('');
     return `<div class="compact jobs"><p class="eyebrow">MAMA ROSA · BEACHFRONT FIXER</p><h1>ROSA’S JOBS.</h1><p class="mini">${doneCount} / 5 complete · ${money(game.player.cash)}<br>Choose an unlocked job. Replays pay the same reward.</p><div class="job-list">${rows}</div><div class="actions"><button class="primary" data-action="jobs-back">BACK</button></div><p class="mini">Each job starts at its meeting point with a fresh ride and full health.<br>Cash and completed jobs stay with you. Free roam is always available.</p></div>`;
+}
+
+function garageMarkup(message='') {
+    const types=[...new Set([...Object.keys(GARAGE_PRICES), ...game.unlockedCars])].filter(t=>Object.hasOwn(CARS,t));
+    const rows=types.map(type=>{
+        const owned=game.unlockedCars.has(type), price=GARAGE_PRICES[type];
+        return `<button data-action="car-${type}" ${!owned && game.player.cash<price?'disabled':''}><strong>${CARS[type].name}</strong><span class="job-reward">${owned?'COLLECT':money(price)}</span></button>`;
+    }).join('');
+    return `<div class="compact jobs"><p class="eyebrow">MARLOWE MOTOR CO.</p><h1>Your garage</h1><p class="mini">${money(game.player.cash)} · Buy a title or collect one of your cars.</p><div class="job-list">${rows}</div><p class="mini">${message}</p><div class="actions"><button class="primary" data-action="resume">BACK TO THE BAY</button></div></div>`;
 }
 
 function failedMarkup() {
@@ -286,6 +298,7 @@ function paintMenu(mode) {
     screen.style.background = mode === 'title' ? '' : '#142D3878';
     if (mode === 'title') screen.innerHTML = titleMarkup();
     else if (mode === 'pause') screen.innerHTML = pauseMarkup();
+    else if (mode === 'garage') screen.innerHTML=garageMarkup();
     else if (mode === 'missions') screen.innerHTML = jobsMarkup();
     else if (mode === 'mission-failed') screen.innerHTML = failedMarkup();
     else if (mode === 'ending') screen.innerHTML = endingMarkup();
@@ -334,6 +347,10 @@ function exitJobs() {
 screen.addEventListener('click', e => {
     const action = e.target.closest('button')?.dataset.action;
     if (!action) return;
+    if(action.startsWith('car-') && game.mode==='garage') {
+        if(collectGarageCar(game,action.slice(4))) resumeGame();
+        else screen.innerHTML=garageMarkup('The forecourt is full. Clear a bay and try again.');
+    }
     if (action === 'missions') openJobs();
     if (action?.startsWith('job-')) {
         const id = action.slice(4);
@@ -349,9 +366,10 @@ screen.addEventListener('click', e => {
     if (action === 'recover') {
         const p = game.player;
         begin(false, {
+            ...snapshotProgress(),
             cash: Math.max(0, p.cash - (game.reason === 'busted' ? 150 : 75)),
             ammo: p.ammo, best: Math.max(game.best, game.stats.reputation),
-            missions: game.mission.completed, cars: [...game.unlockedCars]
+            missions: game.mission.completed
         });
     }
     if (action === 'music') {
@@ -463,7 +481,7 @@ function handleGlobalKeys() {
             input.clear();
         } else if (game.mode === 'play') {
             pauseGame();
-        } else if (game.mode === 'pause') {
+        } else if (game.mode === 'pause' || game.mode==='garage') {
             resumeGame();
         } else if (game.mode === 'missions') {
             exitJobs();
@@ -501,7 +519,9 @@ function frame(now) {
     }
     if (game.mode !== 'play') input.endFrame();
     audio.update(game, elapsed, game.mode === 'play' && !game.mapOpen && !shot);
-    renderer.render(game);
+    // Autopilots run the fixed simulation independently of GPU speed. Render
+    // the final two identical poses before handing the frame to the capture tool.
+    if (!shot || (shot.ready && !window.__shotReady)) renderer.render(game);
     if (shot?.ready) {
         shotPaints++;
         if (shotPaints >= 2) window.__shotReady = true;

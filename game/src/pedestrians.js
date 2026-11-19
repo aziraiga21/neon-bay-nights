@@ -85,6 +85,17 @@ export function addPed(game, x, y, flee = false) {
     return ped;
 }
 
+// Return a passenger to the sidewalk graph at the stop where the fare ended.
+export function leaveCab(game,ped,spot) {
+    ped.hailing=false;
+    if (!ped.inCab) return;
+    ped.inCab=false;
+    ped.crossing=null;
+    ped.x=spot.x; ped.y=spot.y;
+    snapToGraph(game,ped);
+    ped.wait=1.5;
+}
+
 // Sixty-four walkers scattered across the grid, so every district has
 // foot traffic from the first frame.
 export function populatePeds(game) {
@@ -110,6 +121,7 @@ export function populatePeds(game) {
 
 export function updatePeds(game, dt) {
     for (const ped of game.peds) {
+        if (ped.inCab || (ped.hailing && !ped.dead)) {ped.moving=false;continue;}
         if (ped.dead) {
             ped.deadTime += dt;
             continue;

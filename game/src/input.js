@@ -53,6 +53,7 @@ export class Input {
         this.keys.clear();
         this.pressed.clear();
         this.mouse.down = false;
+        this.mouse.aim = false;
     }
     axes() {
         return { x: Number(this.down('KeyD', 'ArrowRight')) - Number(this.down('KeyA', 'ArrowLeft')), y: Number(this.down('KeyS', 'ArrowDown')) - Number(this.down('KeyW', 'ArrowUp')) };

@@ -778,3 +778,139 @@ test('shot URL bootstrapping signals ready only after two final paints', async (
         assert.equal(window.__neon.game.saveError, false);
     }
 });
+
+test('cab dispatch boards a real waiting pedestrian, pauses on the map and pays one fare', () => {
+    const g = makeGame();
+    const passenger = g.peds.find(p => !p.dead);
+    g.peds = [passenger];
+    const cab = makeCar('taxi', passenger.x + 70, passenger.y, 0, P.taxi);
+    g.cars = [cab];
+    g.player.car = cab;
+    const cash = g.player.cash;
+    pressKey(g, 'KeyT');
+    const fare = g.fare;
+    assert.equal(fare.passenger, passenger);
+    assert.equal(g.mission.marker, passenger);
+    assert.equal(passenger.hailing, true);
+    g.mapOpen = true;
+    const remaining = fare.remaining;
+    step(g, 120);
+    assert.equal(fare.remaining, remaining);
+    g.mapOpen = false;
+    Object.assign(cab, { x: passenger.x + 5, y: passenger.y });
+    step(g);
+    assert.equal(passenger.inCab, true);
+    assert.equal(g.mission.marker, fare.stop);
+    assert.equal(fare.stage, 'dropoff');
+    Object.assign(cab, { x: fare.stop.x, y: fare.stop.y });
+    step(g, 2);
+    assert.equal(g.fare, null);
+    assert.equal(g.mission.marker, null);
+    assert.equal(passenger.inCab, false);
+    assert.equal(g.player.cash, cash + fare.payout);
+    assert.equal(g.stats.reputation, 25);
+    assert.equal(readSave().cash, g.player.cash);
+});
+
+test('a cab timeout, abandoned cab or story job releases the passenger without payment', () => {
+    for (const reason of ['timeout', 'exit', 'job']) {
+        const g = makeGame();
+        const ped = g.peds[0];
+        const cab = makeCar('taxi', ped.x, ped.y, 0, P.taxi);
+        g.cars = [cab]; g.player.car = cab; g.peds = [ped];
+        pressKey(g, 'KeyT');
+        const fare = g.fare;
+        assert.ok(fare);
+        const cash = g.player.cash;
+        if (reason === 'timeout') fare.remaining = 0;
+        if (reason === 'exit') pressKey(g, 'KeyE');
+        if (reason === 'job') startMission(g, 'm1');
+        step(g);
+        assert.equal(g.fare, null);
+        assert.equal(!!ped.inCab, false);
+        assert.equal(ped.hailing, false);
+        assert.equal(g.player.cash, cash);
+        if (reason === 'job') assert.equal(g.mission.active.id, 'm1');
+    }
+});
+
+test('ten accessible Neon Tapes pay cash and reputation once, persist, and load from legacy saves', () => {
+    const g = makeGame(92);
+    g.cars = []; g.peds = []; g.enemies = [];
+    const tapes = g.world.pickups.filter(p => p.kind === 'tape');
+    assert.equal(tapes.length, 10);
+    assert.equal(new Set(tapes.map(t => t.id)).size, 10);
+    const cash = g.player.cash;
+    for (const tape of tapes) {
+        assert.equal(isSolid(g.world, tape.x, tape.y, 7), false);
+        Object.assign(g.player, { x: tape.x, y: tape.y });
+        step(g, 2);
+        assert.equal(tape.active, false);
+    }
+    const save = readSave();
+    assert.equal(save.cash, cash + 750);
+    assert.equal(save.reputation, 500);
+    const restored = createGame(1706, save);
+    assert.equal(restored.tapes.size, 10);
+    assert.ok(restored.world.pickups.filter(p => p.kind === 'tape').every(t => !t.active));
+    const legacy = { version: 1, cash: 123, unlockedCars: ['sports'] };
+    store.set('neon-bay-nights.v1', JSON.stringify(legacy));
+    const old = createGame(1706, readSave());
+    assert.equal(old.tapes.size, 0);
+    assert.ok(old.unlockedCars.has('sports'));
+    assert.equal(old.stats.reputation, 0);
+});
+
+test('garage charges once, keeps previous titles, and retrieves a single car safely', async () => {
+    const { collectGarageCar } = await import('../game/src/player.js');
+    const g = makeGame();
+    clearActors(g);
+    Object.assign(g.player, JOB_POINTS.garage);
+    pressKey(g, 'KeyG');
+    assert.equal(g.mode, 'garage');
+    assert.equal(collectGarageCar(g, 'sports'), false);
+    assert.equal(g.player.cash, 350);
+    assert.equal(collectGarageCar(g, 'sedan'), true);
+    assert.equal(g.player.cash, 50);
+    const car = g.player.car;
+    assert.ok(car.owned);
+    assert.ok(readSave().unlockedCars.includes('sedan'));
+    g.player.car = null;
+    assert.equal(collectGarageCar(g, 'sedan'), true);
+    assert.equal(g.player.car, car);
+    assert.equal(g.cars.length, 1);
+    assert.equal(g.player.cash, 50);
+    assert.equal(isSolid(g.world, car.x, car.y, 17), false);
+});
+
+test('four and five stars dispatch bounded reinforcements and retire them after an escape', () => {
+    for (const stars of [4, 5]) {
+        const g = makeGame();
+        clearActors(g);
+        const car = makeCar('sports', 2560, 1408, 0, P.magenta);
+        g.cars = [car]; g.player.car = car;
+        setWanted(g, stars);
+        step(g, 60 * 22);
+        assert.equal(g.police.units.length, stars);
+        for(const unit of g.police.units) assert.ok(Number.isFinite(unit.car.h));
+        setWanted(g, 0);
+        step(g, 60 * 8);
+        assert.equal(g.police.units.length, 0);
+    }
+});
+
+test('Rosa’s after-hours visit follows the fifth job and survives Continue', () => {
+    const g = makeGame();
+    g.mission.completed = MISSIONS.map(m => m.id);
+    step(g);
+    assert.equal(g.mission.marker, JOB_POINTS.diner);
+    Object.assign(g.player, JOB_POINTS.diner, {health: 60});
+    step(g);
+    assert.equal(g.player.health, 100);
+    assert.equal(g.rosaVisit, true);
+    assert.equal(g.mission.marker, null);
+    const restored = createGame(1706, readSave());
+    step(restored);
+    assert.equal(restored.mission.marker, null);
+    assert.equal(restored.rosaVisit, true);
+});

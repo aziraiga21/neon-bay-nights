@@ -137,6 +137,9 @@ export function makeWorld(seed) {
             kind: 'umbrella', x: 2930 + rng.range(-8, 14), y: y + 43, color: rng.pick([P.carCoral, P.teal, P.mango])
         });
     }
+    for(const x of ROADS_X) for(const y of ROADS_Y.slice(0,-1)) {
+        props.push({kind:'hydrant',x:x+57,y:y+83}, {kind:'planter',x:x-76,y:y+236});
+    }
     world.services = [
         {
             id: 'diner', name: 'Rosa’s Diner', short: 'ROSA’S DINER', x: 2444, y: 1336, kind: 'food', price: 40, icon: '+'
@@ -165,6 +168,12 @@ export function makeWorld(seed) {
     world.solids = [...buildings, ...props.filter(p => p.kind === 'container').map(p => ({
             x: p.x - 43, y: p.y - 16, w: 86, h: 32
         }))];
+    // Stable IDs survive a new seed or a change in the ambient pickup population.
+    const tapeSpots=[[188,488],[710,856],[1100,465],[1510,1180],[1864,1550],
+        [2250,1120],[2862,1350],[710,2010],[1600,2246],[2460,2490]];
+    tapeSpots.forEach(([x,y],i)=>pickups.push({
+        id:'tape-'+(i+1),kind:'tape',x,y,phase:i*.9,active:true,respawn:0
+    }));
     return world;
 }
 export function districtAt(x, y) {

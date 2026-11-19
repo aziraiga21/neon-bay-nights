@@ -1,5 +1,6 @@
 import { PALETTE as P, dist } from './config.js';
 import { makeCar } from './vehicles.js';
+import { leaveCab } from './pedestrians.js';
 import { setWanted } from './police.js';
 
 // Story jobs use the same cars, combat actors, wanted state and events as free roam.
@@ -57,6 +58,7 @@ export function startMission(game, id) {
     const def = MISSIONS.find(m => m.id === id);
     if (!def || !isUnlocked(game.mission.completed, id)) return false;
     game.cars = game.cars.filter(c => !c.missionId || c === game.player.car);
+    if(game.fare) finishFare(game);
     game.enemies = game.enemies.filter(e => !e.missionId);
     game.input.clear();
     game.waypoint = null;
@@ -175,7 +177,10 @@ export function missionEvent(game, type, data = {}) {
 }
 export function updateMissions(game, dt) {
     const m = game.mission.active;
-    if (!m) return;
+    if (!m) {
+        updateFreeRoam(game,dt);
+        return;
+    }
     m.update?.(dt, game);
     if (!m.phase) {
         game.mission.objective = m.objective;
@@ -198,4 +203,60 @@ export function updateMissions(game, dt) {
         if (m.stage === 'deliver' && game.police.stars === 0 && game.player.car === m.target && dist(m.target, JOB_POINTS.garage) < 65 && Math.abs(m.target.speed) < 70) completeMission(game);
     }
     syncObjective(game);
+}
+
+function finishFare(game, reason) {
+    const f=game.fare;
+    leaveCab(game,f.passenger,f.stage==='dropoff'?f.car:f.passenger);
+    game.fare=null;
+    game.mission.marker=null; game.mission.objective=FREE;
+    if(reason) game.notify('CAB DISPATCH',reason,P.taxi);
+}
+
+function startFare(game) {
+    const car=game.player.car;
+    if(car?.type!=='taxi' || car.wreck) return;
+    const candidates=game.peds.filter(p=>!p.dead && !p.scared && !p.crossing && !p.inCab);
+    const passenger=candidates.sort((a,b)=>dist(a,car)-dist(b,car))[0];
+    if(!passenger) {game.notify('CAB DISPATCH','No calls nearby. Try another block.');return;}
+    const stops=game.world.services.filter(s=>dist(passenger,s)>550);
+    if(!stops.length) return;
+    const stop=game.rng.pick(stops);
+    passenger.hailing=true; passenger.moving=false;
+    game.fare={car,passenger,stop,stage:'pickup',remaining:45+dist(car,passenger)/65,
+        payout:85+Math.round(dist(passenger,stop)/24)};
+    game.mission.marker=passenger;
+    game.mission.objective='Pull over beside the waiting passenger.';
+}
+
+function updateFreeRoam(game,dt) {
+    if (!game.fare && game.input.tap('KeyT')) startFare(game);
+    const f=game.fare;
+    if (!f) {
+        if(game.mission.completed.includes('m5') && !game.rosaVisit) {
+            game.mission.marker=JOB_POINTS.diner;
+            game.mission.objective='Stop by Rosa’s diner after closing.';
+            if(!game.player.car && dist(game.player,JOB_POINTS.diner)<32){
+                game.rosaVisit=true; game.mission.marker=null; game.mission.objective=FREE;
+                game.notify('MAMA ROSA','Your usual, Jax. Sit down. This one’s on me.',P.pink);
+                game.player.health=100; game.save();
+            }
+        }
+        return;
+    }
+    if(f.car!==game.player.car || f.car.wreck || f.passenger.dead) return finishFare(game,'Fare cancelled.');
+    f.remaining-=dt;
+    if(f.remaining<=0) return finishFare(game,'The passenger cancelled. Press T for another fare.');
+    if(Math.abs(f.car.speed)>12) return;
+    if(f.stage==='pickup' && dist(f.car,f.passenger)<44) {
+        f.stage='dropoff'; f.passenger.inCab=true;
+        f.remaining=45+dist(f.passenger,f.stop)/48;
+        game.mission.marker=f.stop; game.mission.objective='Drop your passenger at '+f.stop.name+'.';
+    } else if(f.stage==='dropoff' && dist(f.car,f.stop)<60) {
+        game.player.cash+=f.payout; game.stats.earned+=f.payout;
+        game.stats.reputation+=25;
+        game.floatText(f.car.x,f.car.y,'+$'+f.payout,P.taxi);
+        finishFare(game,'Fare paid · $'+f.payout+'  /  +25 REP');
+        game.audio.play('pickup'); game.save();
+    }
 }

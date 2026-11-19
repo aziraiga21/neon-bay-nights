@@ -10,6 +10,8 @@ export function readSave() {
             return null;
         }
         return {
+            tapes: Array.isArray(d.tapes) ? [...new Set(d.tapes.filter(id=>/^tape-(?:[1-9]|10)$/.test(id)))] : [],
+            reputation:Math.max(0,Number(d.reputation)||0), rosaVisit:d.rosaVisit===true,
             version: 1, cash: Math.max(0, Math.min(99999999, d.cash)), best: Math.max(0, Number(d.best) || 0), missions: Array.isArray(d.missions) ? d.missions.filter(x => typeof x === 'string') : [], unlockedCars: Array.isArray(d.unlockedCars) ? d.unlockedCars.filter(x => typeof x === 'string') : [], ammo: Math.min(120, Math.max(0, Number.isFinite(d.ammo) ? d.ammo : 36)), settings: { muted: !!d.settings?.muted, music: d.settings?.music !== false }, savedAt: typeof d.savedAt === 'number' ? d.savedAt : 0
         };
     }
@@ -23,6 +25,7 @@ export function writeSave(game) {
     }
     const d = {
         // Completed job IDs are stored alongside cash; active pursuits always restart fresh.
+        tapes:[...game.tapes],reputation:game.stats.reputation,rosaVisit:game.rosaVisit,
         version: 1, cash: Math.floor(game.player.cash), ammo: game.player.ammo, best: Math.max(game.best, game.stats.reputation), missions: [...new Set(game.mission.completed)], unlockedCars: [...game.unlockedCars], settings: { muted: game.audio.muted, music: game.audio.musicEnabled }, savedAt: Date.now()
     };
     try {
@@ -32,6 +35,7 @@ export function writeSave(game) {
         return true;
     }
     catch {
+        game.lastSave = game.time;
         game.saveError = true;
         return false;
     }

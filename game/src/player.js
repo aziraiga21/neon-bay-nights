@@ -5,9 +5,9 @@
 // ammo, and whichever car he is sitting in (null on foot). Everything
 // else in the game reads those fields directly, so this module is the
 // one place that moves them.
-import { PALETTE as P, CARS, TUNE, clamp, dist } from './config.js';
+import { PALETTE as P, CARS, GARAGE_PRICES, TAPE_COUNT, CAR_COLORS, TUNE, clamp, dist } from './config.js';
 import { isSolid, moveCircle, lineClear } from './world.js';
-import { nearestCar, canExit } from './vehicles.js';
+import { makeCar, nearestCar, canExit } from './vehicles.js';
 import { missionEvent } from './missions.js';
 
 const START_CASH = 350;
@@ -83,6 +83,9 @@ function walkStep(game, dt) {
     else p.stamina = Math.min(1, p.stamina + STAMINA_REGEN * dt);
     const speed = sprinting ? TUNE.sprint : TUNE.walk;
     const len = Math.hypot(axis.x, axis.y);
+    if (game.input.tap('KeyG') && nearestService(game,REPAIR_REACH)?.kind==='garage') {
+        game.mode='garage'; game.input.clear(); game.onMissionScreen?.('garage'); return;
+    }
     p.moving = len > 0;
     if (len > 0) {
         const nx = axis.x / len;
@@ -112,7 +115,7 @@ function climbIn(game, car) {
         game.notify('WRECKED', 'That engine is done. Find another ride.', P.carCoral);
         return false;
     }
-    if (car.type === 'police' && game.police.stars < 2) {
+    if (car.type === 'police' && !car.owned && game.police.stars < 2) {
         game.notify('NBPD INTERCEPTOR', 'Locked down until the heat is on. Come back at two stars.', P.policeRed);
         game.audio.play('empty');
         return false;
@@ -123,17 +126,19 @@ function climbIn(game, car) {
         if (runner) runner.scared = 3;
     }
     car.ai = 'parked';
-    car.stolen = true;
+    car.stolen = !car.owned;
+    car.ambient = false;
     p.car = car;
     p.x = car.x;
     p.y = car.y;
     p.h = car.h;
     p.carCooldown = EXIT_COOLDOWN;
     p.moving = false;
-    game.stats.stolen += 1;
-    game.unlockedCars.add(car.type);
     game.audio.play('enter');
-    game.crime('theft', 1.4, { x: p.x, y: p.y }, false);
+    if(!car.owned) {
+        game.stats.stolen += 1;
+        game.crime('theft', 1.4, { x: p.x, y: p.y }, false);
+    }
     missionEvent(game, 'enterCar', { car });
     return true;
 }
@@ -196,6 +201,8 @@ export function useService(game, service = null) {
     if (shop.kind === 'garage') {
         if (!p.car || p.car.hp >= CARS[p.car.type].hp) return false;
         p.car.hp = CARS[p.car.type].hp;
+        if(!p.car.missionId && p.car.type!=='taxi' && p.car.type!=='police')
+            p.car.color=CAR_COLORS[(CAR_COLORS.indexOf(p.car.color)+1)%CAR_COLORS.length];
         p.cash -= shop.price;
         game.notify('ENGINE REBUILT', `${shop.name} · -$${shop.price}`, P.mango);
     } else if (shop.kind === 'food' || shop.kind === 'clinic') {
@@ -229,6 +236,26 @@ function nearestService(game, reach) {
     return best;
 }
 
+// Collect an owned ride at a clear forecourt bay. A full yard leaves both
+// cash and title untouched. Repeated calls bring back the same physical car.
+export function collectGarageCar(game,type) {
+    if(game.mode!=='garage' || game.player.car || nearestService(game,REPAIR_REACH)?.kind!=='garage'
+        || !Object.hasOwn(CARS,type)) return false;
+    const owned=game.unlockedCars.has(type), cost=owned?0:GARAGE_PRICES[type];
+    if(!Number.isFinite(cost) || game.player.cash<cost) return false;
+    const existing=game.cars.find(c=>c.owned && c.type===type);
+    const spot=[{x:1214,y:2060},{x:1160,y:2110},{x:1255,y:2110},{x:1200,y:2176}]
+        .find(p=>!isSolid(game.world,p.x,p.y,17) && game.cars.every(c=>c===existing || dist(c,p)>54));
+    if(!spot) return false;
+    const car=existing || makeCar(type,spot.x,spot.y,0,type==='sports'?P.magenta:type==='taxi'?P.taxi:P.teal);
+    if(!existing) game.cars.push(car);
+    Object.assign(car,spot,{owned:true,ai:'parked',driver:false,wreck:false,hp:CARS[type].hp,
+        h:0,vx:0,vy:0,speed:0,handbrake:false,impactCooldown:0});
+    game.player.cash-=cost; game.unlockedCars.add(type);
+    Object.assign(game.player,spot,{car,h:0,carCooldown:EXIT_COOLDOWN});
+    game.save(); game.audio.play('enter'); return true;
+}
+
 // --- pickups -------------------------------------------------------------
 
 function collectPickups(game, dt) {
@@ -242,9 +269,19 @@ function collectPickups(game, dt) {
             continue;
         }
         if (dist(item, p) > PICKUP_REACH) continue;
+        if(item.kind==='tape') {
+            if(game.tapes.has(item.id)) continue;
+            game.tapes.add(item.id);
+            item.active=false;
+            p.cash+=75; game.stats.earned+=75; game.stats.reputation+=50;
+            game.floatText(item.x,item.y,'+$75',P.pink);
+            game.notify('NEON TAPE  '+game.tapes.size+' / '+TAPE_COUNT,'+$75  ·  +50 REP',P.pink);
+            game.audio.play('pickup'); game.save(); continue;
+        }
         if (item.kind === 'cash') {
             const amount = item.amount || 40;
             p.cash += amount;
+            game.stats.earned += amount;
             game.floatText(item.x, item.y - 14, `+$${amount}`, P.mango);
         } else if (item.kind === 'health') {
             if (p.health >= START_HEALTH) continue;

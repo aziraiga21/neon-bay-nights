@@ -1,5 +1,6 @@
 // Independent seeded streams keep city generation and simulation reproducible.
-export function createRandom(seed = 1706) {
+export const CITY_SEED = 1706;
+export function createRandom(seed = CITY_SEED) {
     let state = seed | 0;
     const random = () => {
         state = (state + 0x6d2b79f5) | 0;

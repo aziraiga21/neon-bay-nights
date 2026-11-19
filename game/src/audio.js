@@ -165,6 +165,10 @@ export class Audio {
             if (b % 2 === 0) {
                 this.tone(bass, b % 8 === 0 ? .35 : .18, 'triangle', .22, delay, this.music);
             }
+            if (game.police.stars>=3 && b%2===1) {
+                this.tone(bass*2,.105,'triangle',.17,delay,this.music);
+                if(game.police.stars>=4) this.tone(bass,.08,'sine',.13,delay+.1225,this.music);
+            }
             if (b % 4 === 0) {
                 this.tone(115, .12, 'sine', .35, delay, this.music, 35);
             }

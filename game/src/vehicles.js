@@ -5,13 +5,17 @@ import { nearestNode, moveCircle, signalGreen, lineClear, isSolid, roadDistance 
 import { missionEvent } from './missions.js';
 
 let serial = 1;
+const oceanDrive = [
+    {id:0,i:7,j:0,x:2778,y:180,links:[1]},
+    {id:1,i:7,j:6,x:2778,y:2670,links:[0]}
+];
 
 // One fresh car. Traffic and patrol cars start with a driver; parked cars
 // and mission cars do not. `ambient` marks traffic the city may recycle.
 export function makeCar(type, x, y, h, color, ai = 'parked') {
     return {
         id: serial++, type, x, y, h,
-        color: color || (type === 'police' ? P.pearl : type === 'taxi' ? P.taxi : P.teal),
+        color: type === 'taxi' ? P.taxi : color || (type === 'police' ? P.pearl : P.teal),
         ai, vx: 0, vy: 0, speed: 0, hp: CARS[type].hp, wreck: false,
         driver: ai === 'traffic' || ai === 'patrol', ambient: ai === 'traffic',
         stillTime: 0, throttle: 0, steer: 0, braking: false,
@@ -45,9 +49,22 @@ export function populateVehicles(game) {
             const x = ROADS_X[i] + (j % 2 ? -46 : 46);
             const y = ROADS_Y[j] + 150;
             const type = rng.pick(['sedan', 'sedan', 'sports', 'taxi', 'van']);
-            cars.push(makeCar(type, x, y, j % 2 ? -Math.PI / 2 : Math.PI / 2, rng.pick(CAR_COLORS)));
+            const paint = rng.pick(CAR_COLORS);
+            const coastalColors = ['#acb6e3','#cf6f52','#688e88','#883f68'];
+            const color = type === 'taxi' ? P.taxi : (i+j)%3 ? paint : coastalColors[(i+j)%4];
+            cars.push(makeCar(type, x, y, j % 2 ? -Math.PI / 2 : Math.PI / 2, color));
         }
     }
+    // Waterfront traffic uses the same two lanes and avoidance rules.
+    for(const [type,y,north,paint] of [
+        ['sedan',860,false,P.carMint],['taxi',1360,true,P.taxi],['van',410,false,P.carCoral]
+    ]) {
+        const c=makeCar(type,2778+(north?18:-18),y,north?-Math.PI/2:Math.PI/2,paint,'traffic');
+        c.oceanDrive=true; c.route=north?{from:1,to:0}:{from:0,to:1}; c.cruise=72;
+        cars.push(c);
+    }
+    // A marked cab waits by the diner even if the moving traffic is far away.
+    cars.push(makeCar('taxi', 2606, 1478, -Math.PI/2, P.taxi));
     // A clear first ride parked outside Rosa's, so the first interaction is immediate.
     cars.push(makeCar('sports', 2508, 1370, 0, P.magenta));
     cars.push(makeCar('van', 1210, 2137, 0, P.carMint));
@@ -83,8 +100,9 @@ function steerTraffic(game, c, dt) {
         const n = nearestNode(game.world, c.x, c.y);
         c.route = { from: n.id, to: game.rng.pick(n.links) };
     }
-    const from = game.world.nodes[c.route.from];
-    const to = game.world.nodes[c.route.to];
+    const nodes = c.oceanDrive ? oceanDrive : game.world.nodes;
+    const from = nodes[c.route.from];
+    const to = nodes[c.route.to];
     const heading = Math.atan2(to.y - from.y, to.x - from.x);
     const { target, remaining } = lookAhead(game, c, from, to, heading);
     if (remaining < 29) {
@@ -376,7 +394,7 @@ function respawnTraffic(game, c) {
             continue;
         }
         Object.assign(c, p, {
-            h: heading, speed: 65, vx: Math.cos(heading) * 65, vy: Math.sin(heading) * 65,
+            oceanDrive:false, h: heading, speed: 65, vx: Math.cos(heading) * 65, vy: Math.sin(heading) * 65,
             hp: CARS[c.type].hp, wreck: false, ai: 'traffic', driver: true,
             route: { from: from.id, to: to.id }, stillTime: 0
         });

@@ -3,7 +3,8 @@
 // objective across the top, speed bottom-right, and a live minimap
 // bottom-left. Tab opens the same map full-screen, where a click drops
 // a waypoint.
-import { PALETTE as P, ROADS_X, ROADS_Y, money, clamp } from './config.js';
+import { districtAt, route, nearestNode } from './world.js';
+import { CARS, TAPE_COUNT, PALETTE as P, ROADS_X, ROADS_Y, money, clamp } from './config.js';
 import { round, text, ellipse, polygon } from './art.js';
 
 const MAP_W = 432;
@@ -24,21 +25,23 @@ export function makeMap(world) {
     const ctx = sheet.getContext('2d');
     const sx = MAP_W / world.width;
     const sy = MAP_H / world.height;
-    ctx.fillStyle = '#C9BFA9';
+    ctx.fillStyle = '#565367';
     ctx.fillRect(0, 0, MAP_W, MAP_H);
-    ctx.fillStyle = P.water;
+    ctx.fillStyle = '#26536c';
     ctx.fillRect(world.water * sx, 0, MAP_W - world.water * sx, MAP_H);
-    ctx.fillStyle = P.sand;
+    ctx.fillStyle = '#aa958f';
     ctx.fillRect(world.coast * sx, 0, (world.water - world.coast) * sx, MAP_H);
-    ctx.fillStyle = P.grass;
+    ctx.fillStyle = '#557875';
     for (const park of world.parks || []) {
         ctx.fillRect(park.x * sx, park.y * sy, park.w * sx, park.h * sy);
     }
-    ctx.fillStyle = P.asphalt;
+    ctx.fillStyle = '#9a9ba7';
     for (const x of ROADS_X) ctx.fillRect((x - 52) * sx, 0, 104 * sx, MAP_H);
-    for (const y of ROADS_Y) ctx.fillRect(0, (y - 52) * sy, MAP_W, 104 * sy);
+    for (const y of ROADS_Y) ctx.fillRect(0, (y - 52) * sy, 2780*sx, 104 * sy);
+    ctx.fillStyle='#9a9ba7';
+    ctx.fillRect(2744*sx,0,68*sx,MAP_H);
     for (const b of world.buildings || []) {
-        ctx.fillStyle = b.wall || P.coral;
+        ctx.fillStyle = b.district==='Marlin Wharf'?'#766c79':b.district==='Coral Mile'?'#a77f86':'#67818d';
         ctx.fillRect(b.x * sx, b.y * sy, Math.max(2, b.w * sx), Math.max(2, b.h * sy));
     }
     ctx.fillStyle = P.teal;
@@ -54,13 +57,18 @@ function paintDots(ctx, game, ox, oy, scale) {
     const dot = (x, y, r, color) => ellipse(ctx, ox + x * scale, oy + y * scale, r, r, color);
     for (const car of game.cars) {
         if (car.wreck) continue;
-        dot(car.x, car.y, car.type === 'police' ? 3 : 2, car.type === 'police' ? P.policeRed : P.paper);
+        dot(car.x,car.y,car.type==='police'?2.8:1.3,car.type==='police'?P.policeRed:'#d2cbce');
     }
     for (const officer of game.police.officers) {
         if (!officer.dead) dot(officer.x, officer.y, 2, P.policeRed);
     }
     for (const foe of game.enemies) {
         if (!foe.dead) dot(foe.x, foe.y, 2, P.carCoral);
+    }
+    for(const tape of game.world.pickups) if(tape.kind==='tape' && tape.active) {
+        const x=ox+tape.x*scale, y=oy+tape.y*scale;
+        ctx.fillStyle='#34223d';ctx.fillRect(x-3,y-2.5,6,5);
+        ctx.fillStyle='#ff86d5';ctx.fillRect(x-2,y-1.5,4,3);
     }
     const marker = game.mission.marker;
     if (marker) {
@@ -70,12 +78,9 @@ function paintDots(ctx, game, ox, oy, scale) {
     }
     if (game.waypoint) dot(game.waypoint.x, game.waypoint.y, 3, P.cyan);
     const p = game.player;
-    ellipse(ctx, ox + p.x * scale, oy + p.y * scale, 4, 4, P.mango);
-    ctx.strokeStyle = P.ink;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(ox + p.x * scale, oy + p.y * scale, 4, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.save();
+    ctx.translate(ox+p.x*scale,oy+p.y*scale);ctx.rotate(p.car?.h ?? p.h);
+    polygon(ctx,[[7,0],[-5,5],[-3,0],[-5,-5]],'#fff4c5',P.ink); ctx.restore();
 }
 
 // --- the frame HUD ---------------------------------------------------------
@@ -83,6 +88,16 @@ function paintDots(ctx, game, ox, oy, scale) {
 export function drawHUD(ctx, game, renderer) {
     const w = renderer?.width || 1280;
     const h = renderer?.height || 800;
+    if(game.player.car && Math.abs(game.player.car.speed)>255) {
+        const intensity=clamp((Math.abs(game.player.car.speed)-255)/150,0,1);
+        ctx.strokeStyle='rgba(255,229,205,'+(.19*intensity)+')';ctx.lineWidth=1.5;
+        for(let i=0;i<18;i++){
+            const a=i*2.399963+Math.sin(i)*.27;
+            const r=.48+((i*.33+game.time*.9)%1)*.18;
+            ctx.beginPath();ctx.moveTo(w*(.5+Math.cos(a)*r),h*(.56+Math.sin(a)*r));
+            ctx.lineTo(w*(.5+Math.cos(a)*(r+.08)),h*(.56+Math.sin(a)*(r+.08)));ctx.stroke();
+        }
+    }
     drawVitals(ctx, game);
     drawWanted(ctx, game, w);
     drawObjective(ctx, game, w);
@@ -91,25 +106,33 @@ export function drawHUD(ctx, game, renderer) {
     drawToast(ctx, game, w);
     drawBust(ctx, game, w, h);
     drawHint(ctx, game, w, h);
+    game.floats.slice(-3).forEach((f,i)=>{
+        ctx.save();ctx.globalAlpha=clamp(f.life*2,0,1);
+        ctx.shadowBlur=4;ctx.shadowColor='#1f202d';
+        text(ctx,f.text,25,137+i*20-(1.6-f.life)*8,17,f.color); ctx.restore();
+    });
+    if(!game.capture && game.lastSave>0 && game.time-game.lastSave<2.2 && !game.saveError)
+        text(ctx,'✓  SAVED',w-26,87,11,P.paper,'right');
     if (game.mission.dialogue) drawDialogue(ctx, game, w, h);
 }
 
 function panel(ctx, x, y, pw, ph) {
-    round(ctx, x, y, pw, ph, 6, '#18333BD9', P.ink);
+    round(ctx,x,y,pw,ph,5,'#161b30eb','#addbd331');
 }
 
 function drawVitals(ctx, game) {
     const p = game.player;
-    panel(ctx, 14, 12, 208, 86);
-    text(ctx, money(p.cash), 26, 36, 20, P.mango);
-    text(ctx, `REP ${game.stats.reputation}`, 150, 34, 10, P.paper, 'left');
-    const pct = clamp(p.health / 100, 0, 1);
-    text(ctx, 'HEALTH', 26, 56, 9, P.paper);
-    round(ctx, 26, 62, 150, 9, 3, '#3A2E28');
-    round(ctx, 26, 62, 150 * pct, 9, 3, pct > 0.5 ? '#7FB069' : pct > 0.25 ? P.mango : P.carCoral);
-    text(ctx, `${Math.ceil(p.health)}`, 182, 71, 10, P.paper);
-    text(ctx, `AMMO ${p.ammo}`, 26, 90, 11, p.ammo === 0 ? P.carCoral : P.paper);
-    if (p.car) text(ctx, `${p.car.type.toUpperCase()} · ${Math.ceil(p.car.hp)} HP`, 96, 90, 10, P.paper);
+    panel(ctx,16,15,213,91);
+    ctx.fillStyle='#75e2d1';ctx.fillRect(16,21,3,32);
+    text(ctx,money(p.cash),29,45,25,'#fff3d7');
+    text(ctx,'REP '+game.stats.reputation,216,34,11,'#a8dcd2','right');
+    text(ctx,'TAPES '+game.tapes.size+'/'+TAPE_COUNT,216,50,10,'#f4a6d0','right');
+    const pct=clamp(p.health/100,0,1);
+    round(ctx,29,59,163,6,3,'#40344a');
+    if(pct) round(ctx,29,59,163*pct,6,3,pct>.5?'#73dbb4':P.carCoral);
+    text(ctx,Math.ceil(p.health)+'',215,67,10,P.paper,'right');
+    text(ctx,'AMMO  '+p.ammo,29,91,12,P.paper);
+    text(ctx,p.car?'ENGINE  '+Math.ceil(p.car.hp):'ON FOOT',215,91,11,'#b2c6d4','right');
 }
 
 function drawWanted(ctx, game, w) {
@@ -119,7 +142,7 @@ function drawWanted(ctx, game, w) {
     else text(ctx, 'NEON BAY PD', w - 232, 30, 9, P.paper);
     for (let i = 0; i < 5; i++) {
         const cx = w - 218 + i * 30;
-        star(ctx, cx, 48, 9, i < stars ? P.mango : '#5A6A66');
+        star(ctx,cx,48,stars>=3 && i<stars?9.5+Math.sin(game.time*5)*1.1:9,i<stars?'#ffc36a':'#535667');
     }
     text(ctx, game.clock, w - 26, 30, 12, P.paper, 'right');
     text(ctx, game.dusk > 0.55 ? 'SUNSET' : 'DAY', w - 26, 52, 9, P.paper, 'right');
@@ -137,24 +160,25 @@ function star(ctx, cx, cy, r, color) {
 
 function drawObjective(ctx, game, w) {
     const m = game.mission;
-    const label = m.active ? `ROSA'S JOB · ${m.active.title.toUpperCase()}` : 'FREE ROAM';
-    const body = m.objective || '';
-    const tw = ctx.measureText ? ctx.measureText(body).width : body.length * 6;
-    const pw = clamp(tw + 36, 280, 620);
-    const x = (w - pw) / 2;
-    panel(ctx, x, 12, pw, 46);
-    text(ctx, label, x + 16, 28, 9, P.mango);
-    text(ctx, body, x + 16, 46, 12, P.paper);
-    let extra = '';
-    if (m.active?.remaining != null) {
-        const left = Math.max(0, Math.ceil(m.active.remaining));
-        extra = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
-    } else if (m.marker) {
-        extra = `${Math.floor(Math.hypot(game.player.x - m.marker.x, game.player.y - m.marker.y))} m`;
-    }
-    if (extra) {
-        const urgent = m.active?.remaining != null && m.active.remaining < 15;
-        text(ctx, extra, x + pw - 14, 30, 14, urgent ? P.carCoral : P.mango, 'right');
+    const waypoint=!m.active && !game.fare && !m.marker && game.waypoint;
+    const label = m.active ? 'ROSA’S JOB  /  '+m.active.title.toUpperCase()
+        : game.fare?'BAY CAB  /  '+(game.fare.stage==='pickup'?'PICKUP':'METER RUNNING')
+        : waypoint?'NAVIGATION':m.marker?'AFTER HOURS':'FREE ROAM';
+    const body=waypoint?waypoint.label:m.objective || '';
+    ctx.font='bold 14px Arial';
+    const pw=clamp(ctx.measureText(body).width+38,310,630);
+    const x=(w-pw)/2;
+    panel(ctx,x,15,pw,56);
+    const accent=waypoint?P.cyan:game.fare?P.taxi:m.active?'#ffb87a':'#88dfd4';
+    ctx.fillStyle=accent;ctx.fillRect(x,23,3,38);
+    text(ctx,label,x+16,35,11,accent);
+    text(ctx,body,x+16,56,14,P.paper);
+    const marker=m.marker || waypoint, remaining=game.fare?.remaining ?? m.active?.remaining;
+    if(remaining!=null){
+        const sec=Math.max(0,Math.ceil(remaining));
+        text(ctx,Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0'),x+pw-13,35,13,sec<15?P.carCoral:accent,'right');
+    } else if(marker){
+        text(ctx,Math.floor(Math.hypot(game.player.x-marker.x,game.player.y-marker.y))+' m',x+pw-13,35,12,accent,'right');
     }
 }
 
@@ -175,29 +199,39 @@ function drawMinimap(ctx, game, renderer, h) {
         ctx.fillRect(x, y, MINI_W, MINI_H);
     }
     paintDots(ctx, game, x, y, MINI_W / game.world.width);
-    text(ctx, 'NEON BAY', x + 6, y + MINI_H - 6, 8, P.paper);
+    panel(ctx,x-3,y-29,MINI_W+6,27);
+    const p=game.player;
+    text(ctx,p.x>2740?'OCEAN DRIVE':districtAt(p.x,p.y).toUpperCase(),x+7,y-11,13,'#ffe9cf');
+    text(ctx,'N ↑',x+MINI_W-8,y-11,11,'#a7dcd6','right');
 }
 
 function drawSpeed(ctx, game, w, h) {
     const car = game.player.car;
     if (!car) return;
     const mph = Math.round(Math.abs(car.speed) * 0.32);
-    panel(ctx, w - 150, h - 76, 136, 62);
-    text(ctx, `${mph}`, w - 26, h - 34, 30, P.paper, 'right');
-    text(ctx, car.speed < -4 ? 'MPH · REVERSE' : 'MPH', w - 26, h - 20, 9, P.mango, 'right');
-    if (car.wreck) text(ctx, 'WRECKED', w - 136, h - 34, 11, P.carCoral);
-    else if (car.hp < 45) text(ctx, 'ENGINE SMOKING', w - 136, h - 34, 9, P.carCoral);
+    const x=w-196,y=h-102;
+    panel(ctx,x,y,180,85);
+    text(ctx,CARS[car.type].name.toUpperCase(),x+13,y+21,11,'#a7ded8');
+    ctx.font='italic bold 40px Arial';ctx.fillStyle=P.paper;ctx.textAlign='right';
+    ctx.fillText(mph,x+122,y+61);
+    text(ctx,car.speed<-4?'REV':'MPH',x+132,y+59,12,'#ffc981');
+    for(let i=0;i<19;i++){
+        ctx.fillStyle=i/19<Math.abs(car.speed)/CARS[car.type].max?(i<14?'#79dacc':'#ff8c87'):'#464154';
+        ctx.fillRect(x+14+i*8,y+70,6,4);
+    }
+    if(car.hp<45) text(ctx,car.wreck?'WRECKED':'ENGINE',x+13,y+49,9,P.carCoral);
 }
 
 function drawToast(ctx, game, w) {
     const t = game.toast;
     if (!t || game.time > t.until) return;
-    const tw = ctx.measureText ? ctx.measureText(t.title).width : t.title.length * 6;
+    ctx.font='bold 12px Arial';
+    const tw=Math.max(ctx.measureText(t.title).width,ctx.measureText(t.sub || '').width);
     const pw = clamp(tw + 44, 220, 560);
     const x = (w - pw) / 2;
-    panel(ctx, x, 70, pw, t.sub ? 52 : 34);
-    text(ctx, t.title, x + pw / 2, 90, 13, t.color || P.mango, 'center');
-    if (t.sub) text(ctx, t.sub, x + pw / 2, 108, 10, P.paper, 'center');
+    panel(ctx, x, 80, pw, t.sub ? 52 : 34);
+    text(ctx, t.title, x + pw / 2, 100, 13, t.color || P.mango, 'center');
+    if (t.sub) text(ctx, t.sub, x + pw / 2, 118, 11, P.paper, 'center');
 }
 
 function drawBust(ctx, game, w, h) {
@@ -215,7 +249,8 @@ function drawBust(ctx, game, w, h) {
 function drawHint(ctx, game, w, h) {
     const p = game.player;
     let hint = '';
-    if (p.car) hint = 'E EXIT · SHIFT HANDBRAKE · SPACE FIRE';
+    if (p.car) hint = p.car.type==='taxi' && !game.mission.active && !game.fare?'T  TAKE A FARE':'E  EXIT    ·    SHIFT  HANDBRAKE';
+    else if(game.world.services.some(s=>s.kind==='garage' && Math.hypot(p.x-s.x,p.y-s.y)<100)) hint='G  OPEN GARAGE';
     else {
         let near = false;
         for (const car of game.cars) {
@@ -226,7 +261,9 @@ function drawHint(ctx, game, w, h) {
         }
         hint = near ? 'E ENTER / STEAL CAR' : 'WASD MOVE · SPACE FIRE · F PUNCH · TAB MAP';
     }
-    text(ctx, hint, w - 16, h - 88, 10, '#F6F1E7CC', 'right');
+    ctx.font='bold 11px Arial';
+    const sw=ctx.measureText(hint).width+22, y=p.car?h-134:h-45;
+    panel(ctx,w-sw-16,y,sw,24);text(ctx,hint,w-27,y+16,11,'#e4e5e4','right');
 }
 
 function drawDialogue(ctx, game, w, h) {
@@ -251,7 +288,7 @@ export function drawFullMap(ctx, game, renderer) {
     const h = renderer?.height || 800;
     ctx.fillStyle = '#142D38D9';
     ctx.fillRect(0, 0, w, h);
-    const scale = Math.min(760 / game.world.width, 600 / game.world.height);
+    const scale=Math.min(Math.min(w-32,760)/game.world.width,Math.min(h-148,600)/game.world.height);
     const mw = game.world.width * scale;
     const mh = game.world.height * scale;
     const x = (w - mw) / 2;
@@ -259,17 +296,27 @@ export function drawFullMap(ctx, game, renderer) {
     game.mapRect = { x, y, w: mw, h: mh, scale };
     round(ctx, x - 6, y - 6, mw + 12, mh + 12, 8, '#0F232BD9', P.paper);
     if (renderer?.map) ctx.drawImage(renderer.map, x, y, mw, mh);
+    const target=game.waypoint || game.mission.marker;
+    if(target){
+        const a=nearestNode(game.world,game.player.x,game.player.y),b=nearestNode(game.world,target.x,target.y);
+        const points=[game.player,...route(game.world,a.id,b.id),target];
+        ctx.save();ctx.lineJoin='round';ctx.lineCap='round';ctx.beginPath();
+        points.forEach((p,i)=>ctx[i?'lineTo':'moveTo'](x+p.x*scale,y+p.y*scale));
+        ctx.strokeStyle='#253049';ctx.lineWidth=6;ctx.stroke();
+        ctx.strokeStyle=game.waypoint?P.cyan:P.mango;ctx.lineWidth=3;ctx.stroke();ctx.restore();
+    }
     paintDots(ctx, game, x, y, scale);
     text(ctx, 'NEON BAY — CITY MAP', w / 2, y - 18, 16, P.paper, 'center');
     text(ctx, 'CLICK TO SET WAYPOINT · TAB / ESC TO CLOSE', w / 2, y + mh + 30, 11, P.mango, 'center');
     const lx = x + 10;
     const ly = y + 14;
-    text(ctx, 'CORAL MILE', lx + 560 * scale, ly + 700 * scale, 11, P.paper);
+    text(ctx, 'CORAL MILE', lx + 2220 * scale, ly + 700 * scale, 11, P.paper);
     text(ctx, 'GLASSWATER', lx + 500 * scale, ly + 1500 * scale, 11, P.paper);
     text(ctx, 'MARLIN WHARF', lx + 900 * scale, ly + 2300 * scale, 11, P.paper);
     text(ctx, 'THE BAY', lx + 3050 * scale, ly + 1400 * scale, 11, P.cyan);
     text(ctx, '◆ YOU', x, y + mh + 52, 10, P.mango);
     text(ctx, '◆ POLICE', x + 70, y + mh + 52, 10, P.policeRed);
     text(ctx, '◆ JOB MARKER', x + 150, y + mh + 52, 10, P.mango);
+    text(ctx,'▣ NEON TAPE',x+370,y+mh+52,10,P.pink);
     text(ctx, '◆ WAYPOINT', x + 260, y + mh + 52, 10, P.cyan);
 }

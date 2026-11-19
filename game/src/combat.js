@@ -123,7 +123,7 @@ function swingFist(game) {
         return;
     }
     const bystander = game.peds.find(
-        ped => !ped.dead && dist(ped, p) < FIST_REACH &&
+        ped => !ped.dead && !ped.inCab && dist(ped, p) < FIST_REACH &&
             Math.abs(angleDelta(p.h, Math.atan2(ped.y - p.y, ped.x - p.x))) < 1.15
     );
     if (bystander) {
@@ -196,7 +196,7 @@ function strikeTarget(game, b, list) {
 
 function strikePed(game, b) {
     for (const ped of game.peds) {
-        if (ped.dead) continue;
+        if (ped.dead || ped.inCab) continue;
         if (dist(b, ped) < 11) {
             ped.dead = true;
             ped.moving = false;
@@ -234,7 +234,7 @@ function hurtFoe(game, foe, amount, attacker) {
             drop: true,
             phase: game.rng.range(0, 6)
         });
-        game.floatText(foe.x, foe.y - 14, `+$${amount}`, P.mango);
+        // The cash popup belongs to collection, when the wallet actually changes.
         missionEvent(game, 'rivalDown', { enemy: foe });
     } else {
         game.stats.reputation += OFFICER_BOUNTY;
