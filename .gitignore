@@ -1,2 +1,4 @@
 /out/
 /out2/
+# Blender keeps editor backup scenes beside their source files.
+*.blend[0-9]

@@ -15,13 +15,13 @@ import { populateEnemies, updateCombat } from './combat.js';
 import { createMissionState, updateMissions, installMission, missionEvent, MISSIONS, isUnlocked, startMission, advanceDialogue, failMission } from './missions.js';
 import { readSave, writeSave } from './save.js';
 import { Renderer, updateCamera } from './render.js';
-import { createShot } from './shots.js';
+import { CAPTURE_NAMES, createShot } from './shots.js';
 
 const canvas = document.querySelector('#game');
 const screen = document.querySelector('#screen');
 const params = new URLSearchParams(location.search);
 const seed = Number.isFinite(Number(params.get('seed'))) && params.has('seed') ? Number(params.get('seed')) : CITY_SEED;
-const captureMode = ['cover', 'chase', 'mission', 'city'].includes(params.get('shot'));
+const captureMode = CAPTURE_NAMES.includes(params.get('shot'));
 const input = new Input(canvas);
 const audio = new Audio(readSave()?.settings);
 let game = createGame(seed, readSave());
@@ -414,7 +414,8 @@ game.mode = 'title';
 paintMenu('title');
 if (captureMode) {
     begin(false);
-    shot = createShot(params.get('shot'), game);
+    const time=Number(params.get('time') ?? 150);
+    shot = createShot(params.get('shot'), game, Number.isFinite(time)?clamp(time,0,360):150);
     game.toast = null;
     game.lastSave = Infinity;
 }

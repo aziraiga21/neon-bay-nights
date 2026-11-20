@@ -4,7 +4,7 @@
 // bottom-left. Tab opens the same map full-screen, where a click drops
 // a waypoint.
 import { districtAt, route, nearestNode } from './world.js';
-import { CARS, TAPE_COUNT, TUNE, PALETTE as P, ROADS_X, ROADS_Y, money, clamp } from './config.js';
+import { dist, CARS, TAPE_COUNT, TUNE, PALETTE as P, ROADS_X, ROADS_Y, money, clamp } from './config.js';
 import { round, text, ellipse, polygon } from './art.js';
 
 const MAP_W = 432;
@@ -178,7 +178,7 @@ function drawObjective(ctx, game, w) {
         const sec=Math.max(0,Math.ceil(remaining));
         text(ctx,Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0'),x+pw-13,35,13,sec<15?P.carCoral:accent,'right');
     } else if(marker){
-        text(ctx,Math.floor(Math.hypot(game.player.x-marker.x,game.player.y-marker.y))+' m',x+pw-13,35,12,accent,'right');
+        text(ctx,Math.floor(dist(game.player,marker))+' m',x+pw-13,35,12,accent,'right');
     }
 }
 

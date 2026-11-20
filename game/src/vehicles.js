@@ -44,15 +44,37 @@ export function populateVehicles(game) {
         car.cruise = rng.range(82, 133);
         cars.push(car);
     }
-    for (let j = 0; j < 6; j++) {
-        for (let i = 0; i < 7; i++) {
-            const x = ROADS_X[i] + (j % 2 ? -46 : 46);
-            const y = ROADS_Y[j] + 150;
-            const type = rng.pick(['sedan', 'sedan', 'sports', 'taxi', 'van']);
-            const paint = rng.pick(CAR_COLORS);
-            const coastalColors = ['#acb6e3','#cf6f52','#688e88','#883f68'];
-            const color = type === 'taxi' ? P.taxi : (i+j)%3 ? paint : coastalColors[(i+j)%4];
-            cars.push(makeCar(type, x, y, j % 2 ? -Math.PI / 2 : Math.PI / 2, color));
+    const overflow=[],curbPaint=new Map();
+    for(let j=0;j<6;j++)for(let i=0;i<7;i++){
+        // Two draws per row preserve the traffic and pedestrian RNG sequence.
+        let rotation=rng.int(0,3);
+        const start=rng.int(0,CAR_COLORS.length-1);
+        const wharfVan=j>=4 && ((i===0 && j===4)||i===5);
+        const types=['sedan','sports','taxi',j>=4?(wharfVan?'van':'sedan'):'van'];
+        const side=j%2?-1:1;
+        const curbAt=k=>ROADS_X[i]+46*(k<2?side:-side);
+        // The hand-placed diner cab is first on this curb in block three.
+        if(i===6 && j===3)curbPaint.set(2606,P.taxi);
+        for(let attempt=0;attempt<4;attempt++){
+            const cab=(2-rotation+4)%4,curb=curbAt(cab);
+            if(!(cab%2===0 && curbPaint.get(curb)===P.taxi) &&
+                !(i===6 && j===2 && curb===2606 && cab%2===1))break;
+            rotation=(rotation+1)%4;
+        }
+        const used=new Set();
+        for(let k=0;k<4;k++){
+            const type=types[(rotation+k)%4],curb=k<2?side:-side;
+            let paint=P.taxi;
+            if(type!=='taxi'){
+                let index=start+k;
+                do { paint=CAR_COLORS[index++%CAR_COLORS.length]; }
+                while(used.has(paint) || paint===curbPaint.get(curbAt(k)));
+            }
+            used.add(paint);curbPaint.set(curbAt(k),paint);
+            const x=ROADS_X[i]+46*curb,y=ROADS_Y[j]+[150,278,103,219][k];
+            const args=[type,x,y,curb*Math.PI/2,paint];
+            if(k===0)cars.push(makeCar(...args));
+            else overflow.push(args);
         }
     }
     // Waterfront traffic uses the same two lanes and avoidance rules.
@@ -76,6 +98,7 @@ export function populateVehicles(game) {
         cruiser.cruise = 92;
         cars.push(cruiser);
     }
+    for(const args of overflow)cars.push(makeCar(...args));
     game.cars = cars;
 }
 

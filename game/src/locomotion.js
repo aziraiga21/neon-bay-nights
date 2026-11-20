@@ -102,6 +102,7 @@ export function solvePose(g, actor = {}) {
         for(const limb of legs){limb.hip+=.80*crouch;limb.knee+=1.55*crouch;}
     }
     // Solve after landing flexion so a bent knee brings the hips down to the planted shoe.
+    // The final terms are the rotated centre and vertical support radius of the elliptical outsole.
     const soleHeight=limb=>HIP_HEIGHT-LEG.thigh*Math.cos(limb.hip)-LEG.shin*Math.cos(limb.hip-limb.knee)
         +.72*Math.sin(limb.foot)-1.09*Math.cos(limb.foot)
         -Math.hypot(2.04*Math.sin(limb.foot),.39*Math.cos(limb.foot));

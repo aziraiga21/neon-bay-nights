@@ -1,5 +1,37 @@
 import { WORLD, ROADS_X, ROADS_Y, PALETTE as P, clamp } from './config.js';
 import { createRandom } from './random.js';
+// All architectural decisions use their own stream after lot generation.
+function designFrontages(world) {
+    const trim=createRandom(world.seed^0x4a79);
+    const bases={hotel:85,bank:95,clinic:60,warehouse:55,garage:48,diner:42,shop:44};
+    for(const b of world.buildings){
+        const cx=b.x+b.w/2,cz=b.y+b.h/2;
+        const faces=[];
+        for(const x of [...ROADS_X,2778])faces.push({gap:Math.abs(x-cx)-b.w/2,angle:x>cx?Math.PI/2:-Math.PI/2});
+        for(const z of ROADS_Y)faces.push({gap:Math.abs(z-cz)-b.h/2,angle:z>cz?0:Math.PI});
+        faces.sort((a,b)=>a.gap-b.gap);
+        b.front=faces[0].angle;
+        // A corner shop also has a display window on its cross street.
+        const corners=faces.filter(f=>Math.abs(Math.cos(f.angle-b.front))<.1 && f.gap<=110);
+        b.crossFronts=corners.map(f=>f.angle);
+        b.height=bases[b.kind]+(b.kind==='hotel'?b.detail*9:b.detail%4*(b.district==='Glasswater'?14:6));
+        const neighbors=world.buildings.slice(0,b.id).filter(n=>{
+            const dx=Math.max(b.x-n.x-n.w,n.x-b.x-b.w,0);
+            const dz=Math.max(b.y-n.y-n.h,n.y-b.y-b.h,0);
+            return Math.hypot(dx,dz)<210;
+        });
+        while(neighbors.some(n=>Math.abs(n.height-b.height)<1))b.height+=3;
+    }
+    const upperHomes=world.buildings.filter(b=>b.kind==='hotel'||b.kind==='shop' && (b.district==='Coral Mile'||b.district==='Glasswater'));
+    const shops=world.buildings.filter(b=>b.kind==='shop' && b.height>=44);
+    function select(lots,fraction){
+        return lots.map(b=>({b,rank:trim()})).sort((a,b)=>a.rank-b.rank)
+            .slice(0,Math.round(lots.length*fraction)).map(row=>row.b);
+    }
+    for(const b of select(upperHomes,.25))b.balconies=true;
+    for(const b of select(shops,.20))b.setback=trim.int(18,30);
+}
+
 export function makeWorld(seed) {
     const rng = createRandom(seed), buildings = [], props = [], parks = [], nodes = [], pickups = [];
     const world = {
@@ -88,6 +120,7 @@ export function makeWorld(seed) {
             addBuilding(ROADS_X[i] - 62, y, 124, 80, 'warehouse', y > 2000 ? 'Marlin Wharf' : 'Glasswater', { label: 'NEON BAY' });
         }
     }
+    designFrontages(world);
     for (const x of ROADS_X) {
         for (let j = 0; j < 6; j++) {
             for (const side of [-1, 1]) {
@@ -141,6 +174,33 @@ export function makeWorld(seed) {
         props.push({kind:'bin',x:x-69,y:y+180},{kind:'manhole',x:x+12,y:y+96});
         if(y>=1792) props.push({kind:'cone',x:x+49,y:y+121},{kind:'cone',x:x+49,y:y+137});
         props.push({kind:'hydrant',x:x+57,y:y+83}, {kind:'planter',x:x-76,y:y+236});
+    }
+    const streetRng=createRandom(seed^0x71ae);
+    // Signals use the same junction phase as traffic, including the short amber interval.
+    for(const node of nodes){
+        if((node.i+node.j)%2!==0)continue;
+        props.push({kind:'signal',x:node.x-58,y:node.y-58,node,angle:0});
+        props.push({kind:'signal',x:node.x+58,y:node.y-58,node,angle:-Math.PI/2});
+    }
+    for(let j=0;j<7;j+=2){
+        const node=nodes[j*7+6];
+        props.push({kind:'signal',x:2722,y:node.y-55,node,angle:0});
+    }
+    for(const x of [2176,2560,2778]) for(const y of ROADS_Y.slice(0,-1)){
+        const curb=x===2778?39:59;
+        for(const side of [-1,1]){
+            const px=x+curb*side, py=y+streetRng.int(95,245);
+            props.push({kind:'bin',x:px+side*4,y:py},{kind:'hydrant',x:px,y:py+11});
+            props.push({kind:'cone',x:px-2*side,y:py+20});
+        }
+    }
+    for(const district of ['Glasswater','Coral Mile','Marlin Wharf']){
+        const local=nodes.filter(n=>districtAt(n.x,n.y+110)===district && n.j<6);
+        for(let i=0;i<8;i++){
+            const n=streetRng.pick(local);
+            props.push({kind:'puddle',x:n.x+(i%2?1:-1)*47,y:n.y+streetRng.int(85,304),
+                width:streetRng.range(2.6,5.3),length:streetRng.range(13,29),phase:streetRng.range(0,6)});
+        }
     }
     world.services = [
         {
@@ -270,7 +330,10 @@ export function sidewalkPoint(world, rng) {
     }
     return { ...world.spawn };
 }
+export function signalPhase(time,node) {
+    return (time + node.i * 1.8 + node.j * 1.2) % 13;
+}
 export function signalGreen(time, node, horizontal) {
-    const phase = (time + node.i * 1.8 + node.j * 1.2) % 13;
+    const phase=signalPhase(time,node);
     return horizontal ? phase < 5.7 : phase > 6.5 && phase < 12.2;
 }

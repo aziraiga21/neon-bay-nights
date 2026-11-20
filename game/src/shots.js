@@ -5,8 +5,10 @@ import { setWanted } from './police.js';
 import { startMission, advanceDialogue } from './missions.js';
 import { addPed } from './pedestrians.js';
 
-export function createShot(name, game) {
-    if (!['cover', 'chase', 'mission', 'city'].includes(name)) return null;
+export const CAPTURE_NAMES = Object.freeze(['cover', 'chase', 'mission', 'city']);
+
+export function createShot(name, game, startTime=150) {
+    if (!CAPTURE_NAMES.includes(name)) return null;
     const input = game.input;
     input.clear();
     game.toast = null;
@@ -69,7 +71,7 @@ export function createShot(name, game) {
         game.cars.push(sedan);
     }
     Object.assign(game.camera, { x: game.player.x, y: game.player.y, zoom: 1.16 });
-    game.time = 150; // 17:58: a consistent late sunset, on the game's day-to-dusk clock.
+    game.time = startTime; // Seconds on the same live day-to-dusk clock as free roam.
     return {
         name,
         get ready() { return ready; },
@@ -106,9 +108,9 @@ export function createShot(name, game) {
                 input.clear();
                 // Capture framing alone is fixed; actor positions come from the simulation above.
                 game.camera.photo = {
-                    cover: {dx:-46,dy:19,dz:65,tx:0,ty:12,tz:-8},
+                    cover: {dx:-46,dy:19,dz:65,tx:-8,ty:12,tz:-8},
                     chase: {dx:-41,dy:17,dz:69,tx:1,ty:11,tz:-12},
-                    mission: {dx:-27,dy:21,dz:65,tx:-10,ty:13,tz:-10},
+                    mission: {dx:14,dy:23,dz:63,tx:-12,ty:13,tz:-12},
                     city: {dx:32,dy:27,dz:74,tx:5,ty:16,tz:-13}
                 }[name];
             }

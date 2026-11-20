@@ -74,6 +74,7 @@ function handlePlayerAttack(game) {
     if(p.z>0 || p.transition || p.health<=0)return;
     if(!click && !fist)return;
     const close=click && !p.car && !p.armed && (nearestFoe(game,p) || nearbyWalker(game,p));
+    // Both cooldowns gate either attack so switching input cannot skip recovery.
     if(!p.car && (fist || (click && (!p.ammo || close)))){
         if(p.punchCooldown<=0 && p.shotCooldown<=0)swingFist(game);
     }else if(click && p.shotCooldown<=0 && p.punchCooldown<=0)firePistol(game);

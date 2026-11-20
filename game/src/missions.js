@@ -162,11 +162,13 @@ function syncObjective(game) {
     game.mission.objective = m.objective;
     game.mission.marker = m.marker;
 }
+const needsIntactVehicle = new Set(['m1', 'm3', 'm5']);
+
 export function missionEvent(game, type, data = {}) {
     const m = game.mission.active;
     m?.onEvent?.({ type, time: game.time, ...data }, game);
     if (!m || m.phase !== 'active') return;
-    if (type === 'vehicleWrecked' && data.car === m.target && ['m1', 'm3', 'm5'].includes(m.id)) failMission(game, 'The job vehicle was destroyed. Rosa needs it in one piece.');
+    if (type === 'vehicleWrecked' && data.car === m.target && needsIntactVehicle.has(m.id)) failMission(game, 'The job vehicle was destroyed. Rosa needs it in one piece.');
     if (type === 'enterCar' && m.id === 'm1' && data.car === m.target) m.package = true;
     if (type === 'enterCar' && m.id === 'm5' && data.car === m.target && m.stage === 'pickup') {
         m.stage = 'chase';
@@ -191,7 +193,7 @@ export function updateMissions(game, dt) {
     }
     if (m.phase !== 'active') return;
     m.elapsed += dt;
-    if (m.target?.wreck && ['m1', 'm3', 'm5'].includes(m.id)) return failMission(game, 'The job vehicle was destroyed.');
+    if (m.target?.wreck && needsIntactVehicle.has(m.id)) return failMission(game, 'The job vehicle was destroyed.');
     if (m.id === 'm1') {
         m.remaining = Math.max(0, 90 - m.elapsed);
         if (!m.remaining) return failMission(game, 'The ninety-second delivery window closed.');

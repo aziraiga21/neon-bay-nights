@@ -42,11 +42,7 @@ export class Input {
         return codes.some(c => this.keys.has(c));
     }
     tap(code) {
-        if (!this.pressed.has(code)) {
-            return false;
-        }
-        this.pressed.delete(code);
-        return true;
+        return this.pressed.delete(code);
     }
     endFrame() {
         this.pressed.clear();

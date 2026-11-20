@@ -166,7 +166,7 @@ function runDispatch(game, dt) {
         sendCruiser(game);
         pol.spawnTimer = 4;
     } else if (pol.stars === 1 && !game.player.car
-        && pol.officers.filter(o => !o.dead).length < 2) {
+        && pol.officers.reduce((alive, o) => alive + Number(!o.dead), 0) < 2) {
         sendOfficer(game);
         pol.spawnTimer = 6;
     } else {

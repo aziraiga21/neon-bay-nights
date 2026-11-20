@@ -1,6 +1,6 @@
 [
-  { "name": "1-cover.jpg", "query": "?shot=cover&seed=1706" },
-  { "name": "2-chase.jpg", "query": "?shot=chase&seed=1706" },
-  { "name": "3-mission.jpg", "query": "?shot=mission&seed=1706" },
-  { "name": "4-city.jpg", "query": "?shot=city&seed=1706" }
+  { "name": "1-cover.jpg", "query": "?shot=cover&seed=1706&time=150" },
+  { "name": "2-chase.jpg", "query": "?shot=chase&seed=1706&time=150" },
+  { "name": "3-mission.jpg", "query": "?shot=mission&seed=1706&time=142" },
+  { "name": "4-city.jpg", "query": "?shot=city&seed=1706&time=150" }
 ]

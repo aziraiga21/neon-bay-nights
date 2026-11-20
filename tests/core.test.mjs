@@ -1087,3 +1087,50 @@ test('standing player, civilians and officers share adult proportions at both de
         }
     }
 });
+
+test('all six wheel sets sit on the road and roll by their configured circumference', async () => {
+    const {buildCar, poseCar} = await import('../game/src/art.js');
+    const {CARS} = await import('../game/src/config.js');
+    for (const [type, spec] of Object.entries(CARS)) {
+        const car = buildCar(type, '#ec4892');
+        const {radius, tyres, model} = car.userData;
+        assert.equal(radius, spec.wheelRadius);
+        assert.equal(radius, type === 'sports' ? 5 : 5.6);
+        poseCar(car, {type, color:'#ec4892', travel:Math.PI*radius, steer:0}, 0, true);
+        for (const tyre of tyres) {
+            assert.equal(tyre.position.y, radius);
+            assert.ok(Math.abs(Math.abs(tyre.rotation.z)-Math.PI)<1e-8);
+            assert.ok(Math.abs(tyre.position.z)+1.17>spec.width/2);
+        }
+        for (const geometry of [model.medium, model.distant]) {
+            geometry.computeBoundingBox();
+            assert.ok(Math.abs(geometry.boundingBox.min.y)<1e-4);
+        }
+    }
+});
+
+test('seeded streets have varied parking, curb puddles and distinct neighboring rooflines', () => {
+    const game=makeGame(), world=game.world;
+    const storefronts=world.buildings.filter(b=>b.kind==='shop' && b.height>=44);
+    const homes=world.buildings.filter(b=>b.kind==='hotel'||b.kind==='shop' && b.district!=='Marlin Wharf');
+    const share=(list,key)=>list.filter(b=>b[key]).length/list.length;
+    assert.ok(share(storefronts,'setback')>=.15 && share(storefronts,'setback')<=.25);
+    assert.ok(share(homes,'balconies')>=.2 && share(homes,'balconies')<=.3);
+    for(const b of world.buildings)for(const other of world.buildings.slice(0,b.id)){
+        const dx=Math.max(b.x-other.x-other.w,other.x-b.x-b.w,0);
+        const dy=Math.max(b.y-other.y-other.h,other.y-b.y-b.h,0);
+        if(Math.hypot(dx,dy)<210)assert.notEqual(b.height,other.height);
+    }
+    assert.equal(world.props.filter(p=>p.kind==='puddle').length,24);
+    for(const n of world.nodes.filter(n=>n.j===0))for(const side of [-46,46]){
+        const curb=game.cars.filter(c=>c.ai==='parked' && c.x===n.x+side).sort((a,b)=>a.y-b.y);
+        for(let i=1;i<curb.length;i++)assert.notEqual(curb[i].color,curb[i-1].color);
+    }
+    for(const n of world.nodes.filter(n=>n.j<6)){
+        const row=game.cars.filter(c=>c.ai==='parked' && Math.abs(c.x-n.x)===46 &&
+            [103,150,219,278].includes(c.y-n.y));
+        assert.equal(row.length,4);
+        assert.equal(new Set(row.map(c=>c.color)).size,4);
+        assert.ok(new Set(row.map(c=>c.type)).size>=3);
+    }
+});

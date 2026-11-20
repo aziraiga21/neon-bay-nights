@@ -38,6 +38,10 @@ const MIME: Record<string, string> = {
 };
 
 createServer((request, response) => {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    response.writeHead(405, { Allow: 'GET, HEAD' }).end();
+    return;
+  }
   const url = new URL(request.url ?? '/', 'http://localhost');
   let pathname: string;
   try {
@@ -66,7 +70,8 @@ createServer((request, response) => {
     'content-length': size,
     'cache-control': 'no-store',
   });
-  createReadStream(file).pipe(response);
+  if (request.method === 'HEAD') response.end();
+  else createReadStream(file).on('error', () => response.destroy()).pipe(response);
 }).listen(port, '127.0.0.1', () => {
   console.log(`game/ is on http://localhost:${port}`);
 });

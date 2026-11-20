@@ -23,22 +23,22 @@ export const HAIR = ['#1C1916', '#6B3E2E', '#C9A36A', '#E7E1D6'];
 export const CAR_COLORS = [PALETTE.pearl, PALETTE.carCoral, PALETTE.mango, PALETTE.teal, PALETTE.navy, PALETTE.carMint, PALETTE.magenta];
 export const CARS = {
     sedan: {
-        name: 'Paloma Sedan', length: 44, width: 22, max: 270, accel: 190, grip: 8, hp: 120
+        wheelRadius: 5.6, name: 'Paloma Sedan', length: 44, width: 22, max: 270, accel: 190, grip: 8, hp: 120
     },
     sports: {
-        name: 'Mirage GT', length: 48, width: 20, max: 410, accel: 260, grip: 6.6, hp: 100
+        wheelRadius: 5.0, name: 'Mirage GT', length: 48, width: 20, max: 410, accel: 260, grip: 6.6, hp: 100
     },
     taxi: {
-        name: 'Bay Cab', length: 46, width: 22, max: 285, accel: 205, grip: 8, hp: 120
+        wheelRadius: 5.6, name: 'Bay Cab', length: 46, width: 22, max: 285, accel: 205, grip: 8, hp: 120
     },
     van: {
-        name: 'Harbor Hauler', length: 52, width: 24, max: 225, accel: 145, grip: 6, hp: 185
+        wheelRadius: 5.6, name: 'Harbor Hauler', length: 52, width: 24, max: 225, accel: 145, grip: 6, hp: 185
     },
     armored: {
-        name: 'Bay Trust Armoured Van', length: 56, width: 26, max: 245, accel: 170, grip: 6.5, hp: 300
+        wheelRadius: 5.6, name: 'Bay Trust Armoured Van', length: 56, width: 26, max: 245, accel: 170, grip: 6.5, hp: 300
     },
     police: {
-        name: 'NBPD Interceptor', length: 48, width: 23, max: 350, accel: 225, grip: 8.5, hp: 180
+        wheelRadius: 5.6, name: 'NBPD Interceptor', length: 48, width: 23, max: 350, accel: 225, grip: 8.5, hp: 180
     }
 };
 export const GARAGE_PRICES = {sedan:300, taxi:450, van:550, sports:1200};

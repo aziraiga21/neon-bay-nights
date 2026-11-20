@@ -10,7 +10,6 @@ export class Audio {
         this.ctx = null;
         this.beat = 0;
         this.nextBeat = 0;
-        this.paused = true;
     }
     unlock() {
         if (!this.ctx) {

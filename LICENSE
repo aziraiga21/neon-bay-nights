@@ -2,6 +2,9 @@ SPDX-License-Identifier: MIT
 
 MIT License
 
+The procedural artwork and game code are distributed under this license.
+The bundled Three.js code carries the notice in game/vendor/THREE-LICENSE.txt.
+
 Copyright (c) 2026 make.fun
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

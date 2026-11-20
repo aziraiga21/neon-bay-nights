@@ -3,7 +3,7 @@ import * as THREE from '../vendor/three.module.min.js';
 import {PALETTE as P, LEG, HIP_HEIGHT} from './config.js';
 
 const outfits=new Map();
-const fabric=new THREE.MeshStandardMaterial({vertexColors:true,roughness:.82,envMapIntensity:.16});
+const fabric=new THREE.MeshLambertMaterial({vertexColors:true,emissive:0x161219});
 const hitFabric=new THREE.MeshStandardMaterial({color:0xffddbf,emissive:0x542527,roughness:.83});
 const portraitSphere=new THREE.SphereGeometry(1,12,8);
 const crowdSphere=new THREE.SphereGeometry(1,8,5);
@@ -19,8 +19,8 @@ for(const [suffix,side] of [['L',1],['R',-1]]){
 }
 
 function outfit(opts, bones, distant=false) {
-    const {jacket,skin,hair,trousers,player,officer,style}=opts;
-    const key=[jacket,skin,hair,trousers,player,officer,style,distant].join('|');
+    const {jacket,skin,hair,trousers,player,officer,style,openJacket}=opts;
+    const key=[jacket,skin,hair,trousers,player,officer,style,openJacket,distant].join('|');
     if(outfits.has(key)) return outfits.get(key);
     const sphere=distant?farSphere:player?portraitSphere:crowdSphere;
     const position=[],normal=[],color=[],index=[],skinIndex=[],weight=[];
@@ -98,12 +98,21 @@ function outfit(opts, bones, distant=false) {
     piece('head',cap,hair,0,0,0);
     if(style===1) oval('head',hair,-1.21,2.14,0,.61,.76,.7);
     if(style===2) oval('head',hair,-.79,1.07,0,.66,1.40,1.03);
-    if(!distant)oval('head',skin,1.38,1.35,0,.30,.43,.26);
+    if(style===3){
+        oval('head','#b29273',-1.05,2.89,0,.44,.45,.49);
+        oval('head',hair,-1.54,2.97,0,.79,.77,.83);
+    }
+    if(style===4){
+        // A shoulder-length curtain narrows below the jaw, leaving the face clear.
+        cut('head',hair,[[-1.45,.70,-1.03],[-.9,1.10,-.99],[.6,1.24,-.93],
+            [1.9,1.27,-.70],[2.82,.94,-.60]],.43);
+    }
+    if(!distant)oval('head','#684647',1.29,.85,0,.105,.068,.39);
     for(const [s,side] of [['L',1],['R',-1]]){
         if(!distant){
             oval('head',skin,-.04,1.34,side*1.11,.26,.44,.18);
             oval('head',P.ink,1.29,1.79,side*.47,.10,.11,.15);
-            oval('head',hair,1.29,2.01,side*.49,.10,.076,.27,side*.06);
+            oval('head',hair,1.29,2.01,side*.49,.11,.092,.34,side*.075);
         }
         const thigh='thigh'+s,knee='knee'+s,ankle='ankle'+s,arm='shoulder'+s,elbow='elbow'+s;
         cut(thigh,trousers,[[-7.87,1.03,.17],[-6.85,1.16,.16],[-4.14,1.33,.04],[-1.16,1.45,-.12],[.84,1.11]],1.03);
@@ -118,18 +127,46 @@ function outfit(opts, bones, distant=false) {
             oval(elbow,skin,.67,-3.88,-side*.47,.4,.69,.27);
             cut(arm,player?'#206a72':jacket,[[-3.79,1.24],[-3.47,1.32]],1.06);
         }
-        if(player){
-            oval('torso','#d3a279',-2.34,5.23,side*1.74,.36,.18,1.34,side*.28);
-            oval('torso','#154f58',-.58,6.47,side*1.47,1.55,.41,1.12,side*-.32);
-            oval('torso','#398993',-1.89,2.13,side*2.35,.47,.10,.91,side*.21);
-            oval('torso','#ebc296',2.08,5.63,side*1.63,.48,.27,1.42,-side*.66);
+    }
+    // Follow the woven surface. Angle zero is the chest, pi the spine.
+    function cloth(tint,rows){
+        const points=[],idx=[],steps=12;
+        for(const [y,r,left,right] of rows){
+            for(let i=0;i<=steps;i++){
+                const a=left+(right-left)*i/steps;
+                points.push(.67*r*Math.cos(a),y,r*Math.sin(a));
+                const n=points.length/3-1;
+                if(n>steps && i)idx.push(n-steps-2,n-1,n,n-steps-2,n,n-steps-1);
+            }
+        }
+        const geo=new THREE.BufferGeometry();geo.setIndex(idx);
+        geo.setAttribute('position',new THREE.Float32BufferAttribute(points,3));geo.computeVertexNormals();
+        piece('torso',geo,tint,0,0,0);
+    }
+    if(openJacket){
+        cloth('#e7d7bf',[[-.34,3.56,-.52,.52],[2,3.32,-.49,.49],[4.5,3.88,-.55,.55],[6.35,4.0,-.52,.52]]);
+        for(const side of [-1,1]){
+            const lapel=(y,r,a,b)=>[y,r,side>0?a:-b,side>0?b:-a];
+            cloth('#40535a',[lapel(.1,3.58,.42,.55),lapel(2,3.38,.42,.63),
+                lapel(5.2,4.10,.39,.80),lapel(6.4,4.03,.61,.90)]);
         }
     }
     if(player){
-        oval('torso','#f3aa66',-2.52,4.15,0,.34,1.02,1.12);
-        piece('torso',unitBox,'#c3a378',2.22,2.70,0,.19,5.3,.1);
-        cut('torso','#274c51',[[6.87,1.72],[7.55,1.6]],.87);
-        for(const y of [3.8,4.3]) piece('torso',unitBox,jacket,-2.91,y,0,.12,.14,2.5);
+        cloth('#f3aa66',[[4.02,3.72,-1.42,1.42],[4.50,3.84,-1.42,1.42]]);
+        cut('torso','#206a72',[[6.87,1.72],[7.55,1.6]],.87);
+        // An enamel-coloured sunset badge follows the curved centre back.
+        function badge(geo,tint,offset){
+            const pos=geo.attributes.position;
+            for(let i=0;i<pos.count;i++){
+                const y=4.12+pos.getY(i),z=pos.getX(i)*1.23;
+                const r=3.2+(y-2)*.22;
+                pos.setXYZ(i,-.67*Math.sqrt(r*r-z*z)-offset,y,z);
+            }
+            geo.computeVertexNormals();piece('torso',geo,tint,0,0,0);
+        }
+        badge(new THREE.CircleGeometry(.99,24),'#206a72',.074);
+        badge(new THREE.RingGeometry(.83,1.01,24),'#f3aa66',.088);
+        badge(new THREE.CircleGeometry(.58,20,0,Math.PI),'#f3aa66',.094);
         piece('head',unitBox,'#312b38',1.35,1.82,0,.22,.30,1.86);
     }
     if(officer){

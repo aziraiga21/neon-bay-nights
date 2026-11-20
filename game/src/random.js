@@ -1,4 +1,5 @@
-// Independent seeded streams keep city generation and simulation reproducible.
+// Instantiate a separate stream for cosmetic placement. Consuming the simulation
+// stream to draw a facade would also change the next pedestrian or traffic choice.
 export const CITY_SEED = 1706;
 export function createRandom(seed = CITY_SEED) {
     let state = seed | 0;

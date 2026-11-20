@@ -18,13 +18,13 @@ import * as THREE from './../vendor/three.module.min.js';
 import { createRandom } from './random.js';
 import { CARS, PALETTE as P, clamp, lerp, angleDelta, gearValue } from './config.js';
 import {
-    buildCityGeometry, buildPalms, buildSigns, buildCar, poseCar,
+    buildCityGeometry, buildPalms, buildSigns, buildCar, poseCar, trafficBatch, cityBatch, streetSignals, curbPuddles,
     pickupGeometry, makeBeacon, yawFor
 } from './art.js';
-import { RoomEnvironment } from '../vendor/RoomEnvironment.js';
 import {buildPersonRig,poseRig} from './rig.js';
 import {solvePose,makeGait} from './locomotion.js';
-import {isSolid} from './world.js';
+import {civilianLook} from './pedestrians.js';
+import {isSolid,signalPhase} from './world.js';
 import { makeMap, drawHUD, drawFullMap } from './hud.js';
 
 const FOV = 55;
@@ -110,7 +110,7 @@ function streetMaterial(paving=false) {
     const map=new THREE.CanvasTexture(c);
     if(paving)map.wrapS=map.wrapT=THREE.RepeatWrapping;
     map.colorSpace=THREE.SRGBColorSpace;map.anisotropy=4;
-    return new THREE.MeshStandardMaterial({map,roughness:paving?.92:.96,envMapIntensity:.24});
+    return new THREE.MeshLambertMaterial({map,emissive:0x211a21});
 }
 
 const sunDirection = new THREE.Vector3(-.16,.145,-.976).normalize();
@@ -151,6 +151,41 @@ function makeSky(noise) {
     // Its depth is always the far plane. Opaque streets and walls can reject
     // hidden sky fragments before the two cloud texture samples.
     sky.renderOrder=10; return sky;
+}
+
+// Capture the light a polished panel sees at street height. The sky is HDR:
+// a thin band of open water and broken window ribbons survive the PMREM blur.
+function duskEnvironment(renderer) {
+    const scene=new THREE.Scene();
+    const sky=new THREE.Mesh(new THREE.SphereGeometry(85,32,20),new THREE.ShaderMaterial({
+        side:THREE.BackSide,
+        vertexShader:`varying vec3 ray; void main(){ray=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
+        fragmentShader:`varying vec3 ray; void main(){
+            vec3 d=normalize(ray);
+            vec3 sky=mix(vec3(2.8,1.05,.53),vec3(1.73,.78,1.23),smoothstep(.02,.38,d.y));
+            sky=mix(sky,vec3(.83,.73,1.12),smoothstep(.25,.86,d.y));
+            float water=exp(-abs(d.y-.025)*33.);
+            float sunset=exp(-length(d-vec3(-.16,.14,-.976))*9.);
+            sky+=vec3(4.8,2.3,1.1)*(water*.55+sunset);
+            gl_FragColor=vec4(.35*mix(vec3(.16,.10,.14),sky,smoothstep(-.08,.01,d.y)),1.);
+        }`
+    }));
+    scene.add(sky);
+    const shape=new THREE.BoxGeometry(1,1,1);
+    const front=new THREE.MeshBasicMaterial({color:new THREE.Color(.075,.046,.085)});
+    const windows=new THREE.MeshBasicMaterial({color:new THREE.Color(3.6,1.8,.96)});
+    for(let i=0;i<12;i++){
+        const a=i*.524, height=4+(i*7%11);
+        if(i===8 || i===9)continue; // The bay opens to the sunset.
+        for(const [mat,w,h,y] of [[front,14,height,height/2-3],[windows,11,.55,height*.56-3]]){
+            const strip=new THREE.Mesh(shape,mat),r=mat===front?29:28.3;
+            strip.position.set(r*Math.sin(a),y,r*Math.cos(a));strip.rotation.y=a;
+            strip.scale.set(w,h,1);scene.add(strip);
+        }
+    }
+    const pmrem=new THREE.PMREMGenerator(renderer), target=pmrem.fromScene(scene,.04);
+    shape.dispose();front.dispose();windows.dispose();sky.geometry.dispose();sky.material.dispose();pmrem.dispose();
+    return target;
 }
 
 function makeWater(world, noise) {
@@ -199,6 +234,41 @@ function dampAngle(current, target, rate, dt) {
     return current + angleDelta(current, target) * (1 - Math.exp(-rate * dt));
 }
 
+// A street facade hides an object only when its entire bounding box lies
+// inside the cone from the eye through the opaque, unbevelled part of the wall.
+class BuildingOcclusion {
+    constructor(){this.faces=[];this.count=0;}
+    update(buildings,eye){
+        this.eye=eye;this.count=0;
+        const face=(across,wall,lo,hi,height)=>{
+            const origin=across?eye.x:eye.z, side=across?eye.z:eye.x;
+            const depth=Math.abs(wall-origin);
+            if(depth<1 || depth>720)return;
+            const f=this.faces[this.count]??={};
+            this.count++;
+            f.across=across;f.sign=Math.sign(wall-origin);f.depth=depth;
+            f.lo=(lo+5-side)/depth;f.hi=(hi-5-side)/depth;
+            f.bottom=(1-eye.y)/depth;f.top=(height-5-eye.y)/depth;
+        };
+        for(const b of buildings){
+            if(Math.abs(b.x+b.w/2-eye.x)>800 || Math.abs(b.y+b.h/2-eye.z)>800)continue;
+            if(eye.x<b.x || eye.x>b.x+b.w)face(true,eye.x<b.x?b.x:b.x+b.w,b.y,b.y+b.h,b.height);
+            if(eye.z<b.y || eye.z>b.y+b.h)face(false,eye.z<b.y?b.y:b.y+b.h,b.x,b.x+b.w,b.height);
+        }
+    }
+    hides(x,y,z,rx,ry,rz){
+        const dx=x-this.eye.x,dy=y-this.eye.y,dz=z-this.eye.z;
+        for(let i=0;i<this.count;i++){
+            const f=this.faces[i],d=(f.across?dx:dz)*f.sign,rd=f.across?rx:rz;
+            if(d-rd<=f.depth)continue;
+            const u=f.across?dz:dx,ru=f.across?rz:rx;
+            if(u-ru>=d*f.lo+rd*Math.abs(f.lo) && u+ru<=d*f.hi-rd*Math.abs(f.hi)
+                && dy-ry>=d*f.bottom+rd*Math.abs(f.bottom) && dy+ry<=d*f.top-rd*Math.abs(f.top))return true;
+        }
+        return false;
+    }
+}
+
 export class Renderer {
     constructor(canvas, world) {
         this.canvas = canvas;
@@ -225,7 +295,7 @@ export class Renderer {
 
         // Cars catch narrow highlights. People, roofs and street furniture
         // share softer vertex lighting and the same low directional sun.
-        this.masonry = new THREE.MeshStandardMaterial({ vertexColors:true,roughness:.9,envMapIntensity:.30 });
+        this.masonry = new THREE.MeshLambertMaterial({vertexColors:true,emissive:0x17121a});
         this.basic = new THREE.MeshBasicMaterial({ vertexColors: true });
         this.bulletMat = new THREE.MeshBasicMaterial({ color: 0xffd76a });
         this.shadowMat = new THREE.MeshBasicMaterial({
@@ -236,6 +306,10 @@ export class Renderer {
         });
 
         this.carMeshes = new Map();
+        this.trafficBatches=new Map();
+        this.actorBounds=new THREE.Sphere();
+        this.occlusion=new BuildingOcclusion();
+        this.seenActors=new Set();
         this.pedMeshes = new Map();
         this.enemyMeshes = new Map();
         this.officerMeshes = new Map();
@@ -261,19 +335,17 @@ export class Renderer {
                 this.renderer.toneMappingExposure=.94;
                 this.renderer.outputColorSpace=THREE.SRGBColorSpace;
                 this.scene = new THREE.Scene();
-                const pmrem=new THREE.PMREMGenerator(this.renderer), room=new RoomEnvironment(this.renderer);
-                this.environment=pmrem.fromScene(room,.04);
+                this.environment=duskEnvironment(this.renderer);
                 this.scene.environment=this.environment.texture;
-                room.dispose();pmrem.dispose();
                 this.scene.background = new THREE.Color(P.sky);
                 this.scene.fog=new THREE.Fog(0xff995e,330,1850);
                 this.camera = new THREE.PerspectiveCamera(FOV, 1280 / 800, .8, 2400);
-                this.hemi = new THREE.HemisphereLight(0xf4cbd9, 0x514863, .88);
+                this.hemi = new THREE.HemisphereLight(0xffe2ea, 0x887781, .88);
                 this.scene.add(this.hemi);
                 this.dir = new THREE.DirectionalLight(0xffd59e, 2.35);
                 this.scene.add(this.dir,this.dir.target);
                 this.renderer.shadowMap.enabled=true;
-                this.renderer.shadowMap.type=THREE.PCFShadowMap;
+                this.renderer.shadowMap.type=THREE.PCFSoftShadowMap;
                 this.dir.castShadow=true;
                 this.dir.shadow.mapSize.set(2048,2048);
                 this.dir.shadow.autoUpdate=false;
@@ -282,7 +354,7 @@ export class Renderer {
                 this.dir.shadow.camera.updateProjectionMatrix();
                 this.dir.shadow.bias=-.0004;
                 this.dir.shadow.normalBias=.15;
-                const rim=new THREE.DirectionalLight(0xa1b5de,.38);
+                const rim=this.rim=new THREE.DirectionalLight(0xffb27a,.48);
                 rim.position.set(-.8,.35,.35); this.scene.add(rim);
                 this.noise=weatherTexture(); this.sky=makeSky(this.noise); this.scene.add(this.sky);
                 this._buildDynamicPools();
@@ -395,6 +467,9 @@ export class Renderer {
             blending:THREE.AdditiveBlending,depthWrite:false});
         this.beams=new THREE.InstancedMesh(new THREE.PlaneGeometry(1,1),beamMat,300);
         this.beams.frustumCulled=false;this.scene.add(this.beams);
+        this.signalLenses=new THREE.InstancedMesh(new THREE.CircleGeometry(1.23,12),
+            new THREE.MeshBasicMaterial({toneMapped:false}),64);
+        this.signalLenses.frustumCulled=false;this.scene.add(this.signalLenses);
         this.lightTransform=new THREE.Object3D();
         this.bulletGeo = new THREE.BoxGeometry(16, 2, 2);
 
@@ -439,6 +514,7 @@ export class Renderer {
             this.officerMeshes, this.bulletMeshes, this.pickupMeshes]) {
             for (const mesh of map.values()){
                 mesh.userData.mesh?.skeleton?.dispose();
+                mesh.userData.wheelSet?.dispose();
                 this.scene?.remove(mesh);
             }
             map.clear();
@@ -456,6 +532,7 @@ export class Renderer {
             this.scene.remove(this.staticGroup);
             const geometries=new Set(), materials=new Set();
             this.staticGroup.traverse(o=>{
+                if(o.isInstancedMesh)o.dispose();
                 if(o.geometry) geometries.add(o.geometry);
                 if(o.material && o.material!==this.masonry && o.material!==this.basic) materials.add(o.material);
             });
@@ -468,29 +545,22 @@ export class Renderer {
         this.lamps=world.props.filter(p=>p.kind==='lamp');
         const {walls,rest,ground,road,paving,glow,atlas,windows}=buildCityGeometry(world);
         this.facadeMaterial=new THREE.MeshStandardMaterial({roughness:.86,envMapIntensity:.32,map:atlas,emissiveMap:windows,emissive:0xffdbad});
-        for(const geo of walls){
-            const block=new THREE.Mesh(geo,this.facadeMaterial);
-            block.castShadow=block.receiveShadow=true;this.staticGroup.add(block);
-        }
+        this.detailBlocks.push(cityBatch(walls,this.facadeMaterial,true));
         for(const [blocks,material] of [[rest,this.masonry],[glow,this.basic]]){
-            for(const {near,far,center} of blocks){
-                const detail=new THREE.Mesh(near,material);
-                detail.castShadow=detail.receiveShadow=material===this.masonry;
-                const outline=far?new THREE.Mesh(far,material):null;
-                this.staticGroup.add(detail);if(outline)this.staticGroup.add(outline);
-                near.computeBoundingBox();
-                if(far)far.computeBoundingBox();
-                this.detailBlocks.push({detail,outline,center});
-            }
+            this.detailBlocks.push(cityBatch(blocks,material,material===this.masonry,'near'),
+                cityBatch(blocks,material,false,'far'));
         }
+        this.staticGroup.add(...this.detailBlocks);
         const pavement=new THREE.Mesh(ground,this.masonry); pavement.receiveShadow=true;
         const slabs=new THREE.Mesh(paving,streetMaterial(true));slabs.receiveShadow=true;
         const asphalt=new THREE.Mesh(road,streetMaterial());
         asphalt.receiveShadow=true;
         const palms=buildPalms(world,this.masonry);
         this.palms=palms;
-        this.staticGroup.add(palms,pavement,slabs,asphalt);
-        for (const sign of buildSigns(world)) this.staticGroup.add(sign);
+        const signals=streetSignals(world,this.masonry);this.signalLights=signals.lights;this.signals=signals.mesh;
+        this.staticGroup.add(palms,pavement,slabs,asphalt,signals.mesh,curbPuddles(world));
+        this.neon=[];
+        for (const sign of buildSigns(world,this.neon)){this.staticGroup.add(sign);this.detailBlocks.push(sign);}
         this.water=makeWater(world,this.noise);
         this.staticGroup.add(this.water);
         this.scene.add(this.staticGroup);
@@ -600,7 +670,8 @@ export class Renderer {
         this.scene.fog.color.copy(u.horizon.value).lerp(u.ember.value,d);
         const nt=clamp((d-.76)/.24,0,1);
         this.scene.fog.color.lerp(this._tmpColor.setRGB(.026,.036,.085),nt*nt*(3-2*nt)*.95);
-        this.hemi.intensity=lerp(.88,.40,nt);
+        this.rim.color.set(0xffb27a).lerp(this._tmpColor.set(0xa1b5de),nt);
+        this.hemi.intensity=lerp(1.28,.48,nt);
         this.dir.color.set(nt>.6?0xb7c8ef:0xffd59e);
         this.dir.intensity=lerp(2.65,1.85,d)*(1-nt*.75);
         const {x,y}=game.player;
@@ -684,16 +755,13 @@ export class Renderer {
         this.dir.shadow.updateMatrices(this.dir);
         const sun=this.dir.shadow.getFrustum(), view=this.viewFrustum;
         view.setFromProjectionMatrix(this._tmpMatrix.multiplyMatrices(this.camera.projectionMatrix,this.camera.matrixWorldInverse));
-        this.palms.userData.update(this.camera.position,this.renderScale,view,sun);
-        for(const {detail,outline,center} of this.detailBlocks){
-            const d=center.distanceToSquared(this.camera.position);
-            const bounds=detail.geometry.boundingBox;
-            detail.visible=d<570**2 && (view.intersectsBox(bounds) || (detail.castShadow && sun.intersectsBox(bounds)));
-            if(outline)outline.visible=d>=570**2 && d<2300**2 && view.intersectsBox(outline.geometry.boundingBox);
-        }
+        this.occlusion.update(this.world.buildings,this.camera.position);
+        this.palms.userData.update(this.camera.position,this.renderScale,view,sun,this.occlusion);
+        this.signals.userData.update(view,sun,this.occlusion);
+        for(const batch of this.detailBlocks)batch.userData.update(this.camera.position,view,sun,this.occlusion);
         this._syncCars(game);
         this._syncPeople(this.pedMeshes, game.peds, ped => ({
-            jacket: ped.jacket, skin: ped.skin, hair: ped.hair, trousers: ped.trousers
+            ...civilianLook(ped.id), jacket: ped.jacket, skin: ped.skin, hair: ped.hair, trousers: ped.trousers
         }), game);
         this._syncPeople(this.enemyMeshes, game.enemies, e => ({
             jacket: e.jacket, skin: e.skin, hair: e.hair, trousers: P.trousers
@@ -714,12 +782,37 @@ export class Renderer {
     }
 
     _syncCars(game) {
-        const seen = new Set();
+        const seen=this.seenActors;
+        seen.clear();
+        for(const batch of this.trafficBatches.values())batch.count=0;
+        const sun=this.dir.shadow.getFrustum(),eye=this.camera.position;
         for (const car of game.cars) {
             seen.add(car);
-            let mesh = this.carMeshes.get(car);
-            const range=Math.hypot(car.x-this.camera.position.x,car.y-this.camera.position.z);
-            if(range>1400){if(mesh)mesh.visible=false;continue;}
+            let mesh=this.carMeshes.get(car);
+            const range=Math.hypot(car.x-eye.x,car.y-eye.z);
+            const bounds=this.actorBounds;
+            bounds.center.set(car.x,11,car.y);bounds.radius=CARS[car.type].length*.63;
+            if(range>1400 || (!sun.intersectsSphere(bounds) && (!this.viewFrustum.intersectsSphere(bounds) ||
+                this.occlusion.hides(car.x,12,car.y,bounds.radius,13,bounds.radius)))){
+                if(mesh)mesh.visible=false;
+                continue;
+            }
+            const projected=range/this.renderScale;
+            if(car!==game.player.car && projected>=165){
+                if(mesh)mesh.visible=false;
+                const level=projected<520?'medium':'distant',key=car.type+'|'+level;
+                let batch=this.trafficBatches.get(key);
+                if(!batch || batch.instanceMatrix.count<game.cars.length){
+                    if(batch){this.scene.remove(batch);batch.dispose();}
+                    batch=trafficBatch(car.type,level,Math.max(256,2*game.cars.length));
+                    this.trafficBatches.set(key,batch);this.scene.add(batch);
+                }
+                const a=this.lightTransform;
+                a.position.set(car.x,car.wreck?-2:0,car.y);
+                a.rotation.set(0,-car.h,car.wreck?.05:0,'XYZ');a.scale.setScalar(1);a.updateMatrix();
+                batch.setMatrixAt(batch.count,a.matrix);batch.setColorAt(batch.count++,this._tmpColor.set(car.color));
+                continue;
+            }
             if (!mesh) {
                 mesh = buildCar(car.type,car.color);
                 this.scene.add(mesh);
@@ -730,23 +823,32 @@ export class Renderer {
             poseCar(mesh,car,range/this.renderScale,car===game.player.car);
             mesh.visible = true;
         }
+        for(const batch of this.trafficBatches.values()){
+            batch.visible=batch.count>0;
+            if(batch.visible){batch.instanceMatrix.needsUpdate=true;batch.instanceColor.needsUpdate=true;}
+        }
         for (const [car, mesh] of this.carMeshes) {
             if (!seen.has(car)) {
                 this.scene.remove(mesh);
+                mesh.userData.wheelSet.dispose();
                 this.carMeshes.delete(car);
             }
         }
     }
 
     _syncPeople(map, list, makeOpts, game) {
-        const seen = new Set();
+        const seen=this.seenActors;seen.clear();
         for (const person of list) {
             seen.add(person);
             let mesh = map.get(person);
             const range=Math.hypot(person.x-this.camera.position.x,person.y-this.camera.position.z);
-            if(range>1100){if(mesh)mesh.visible=false;continue;}
+            const b=this.actorBounds;b.center.set(person.x,13,person.y);b.radius=22;
+            if(range>1100 || (!this.dir.shadow.getFrustum().intersectsSphere(b) &&
+                (!this.viewFrustum.intersectsSphere(b)||this.occlusion.hides(person.x,14,person.y,12,16,12)))){
+                if(mesh)mesh.visible=false;continue;
+            }
             if (!mesh) {
-                mesh = buildPersonRig({...makeOpts(person),style:person.id%3});
+                mesh = buildPersonRig({style:person.id%3,...makeOpts(person)});
                 this.scene.add(mesh);
                 mesh.castShadow=true;
                 map.set(person, mesh);
@@ -784,7 +886,7 @@ export class Renderer {
     }
 
     _syncPickups(game) {
-        const seen = new Set();
+        const seen=this.seenActors;seen.clear();
         for (const item of game.world.pickups) {
             if (!item.active) continue;
             seen.add(item);
@@ -808,7 +910,7 @@ export class Renderer {
     }
 
     _syncBullets(game) {
-        const seen = new Set();
+        const seen=this.seenActors;seen.clear();
         for (const b of game.bullets) {
             seen.add(b);
             let mesh = this.bulletMeshes.get(b);
@@ -900,6 +1002,26 @@ export class Renderer {
             if(Math.hypot(lamp.x-this.camera.position.x,lamp.y-this.camera.position.z)>510)continue;
             put(lamp.x+6,29,lamp.y,9,7,'#ffc88c',false);
             put(lamp.x+6,.46,lamp.y,30,24,'#624432',true);
+        }
+        const lenses=this.signalLenses;lenses.count=0;
+        for(const light of this.signalLights){
+            const dx=this.camera.position.x-light.x,dz=this.camera.position.z-light.z;
+            if(dx*dx+dz*dz>980**2 || dx*Math.sin(light.angle)+dz*Math.cos(light.angle)<0)continue;
+            const phase=signalPhase(game.time,light.node);
+            const k=light.horizontal?(phase<5.7?2:phase<6.5?1:0):(phase>6.5 && phase<12.2?2:phase>=12.2?1:0);
+            const y=35-k*3.25,color=k===2?'#60ffab':k===1?'#ffbd44':'#ff4a42';
+            a.rotation.set(0,light.angle,0);a.position.set(light.x,y,light.z);a.scale.setScalar(1);a.updateMatrix();
+            lenses.setMatrixAt(lenses.count,a.matrix);lenses.setColorAt(lenses.count++,this._tmpColor.set(color));
+            put(light.x,y,light.z,7.2,7.2,k===2?'#49a879':k===1?'#c2853e':'#be4f4a',false);
+        }
+        lenses.visible=lenses.count>0;lenses.instanceMatrix.needsUpdate=true;
+        if(lenses.instanceColor)lenses.instanceColor.needsUpdate=true;
+        for(const light of this.neon){
+            const dx=this.camera.position.x-light.x, dz=this.camera.position.z-light.z;
+            if(dx*light.nx+dz*light.nz<0 || dx*dx+dz*dz>950**2 || n>=mesh.instanceMatrix.count)continue;
+            a.position.set(light.x,light.y,light.z);a.rotation.set(0,light.angle,0);
+            a.scale.set(light.width,light.height,1);a.updateMatrix();mesh.setMatrixAt(n,a.matrix);
+            mesh.setColorAt(n++,this._tmpColor.set(light.color).multiplyScalar(game.dusk*.83));
         }
         for(const c of game.cars){
             if(c.wreck || (c!==game.player.car && !c.driver) || Math.hypot(c.x-this.camera.position.x,c.y-this.camera.position.z)>600) continue;

@@ -12,6 +12,11 @@ const SIDEWALK = 66;
 const JACKETS = ['#0E7C86', '#C46B4A', '#7C9F87', '#E7746F', '#F0B429', '#243056', '#B7E4C7', '#E7E1D6'];
 const TROUSERS = ['#2C3138', '#5A4A3A', '#3A4A5A', '#6B5A4A'];
 
+// Appearance is derived from the stable walker ID and consumes no route or outfit RNG.
+export function civilianLook(id){
+    return {style:id%5,openJacket:Math.floor(id/3)%3===0};
+}
+
 // --- construction ----------------------------------------------------------
 
 // Snap a fresh walker onto the nearest road segment, keeping whatever

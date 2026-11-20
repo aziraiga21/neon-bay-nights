@@ -21,6 +21,7 @@ export function readSave() {
     }
 }
 export function writeSave(game) {
+    // The four live camera runs share the player's origin and must never overwrite a campaign.
     if (game.capture) {
         return true;
     }

@@ -36,7 +36,20 @@ At Marlowe Motor Co., press **G** on foot to buy or collect a car, or **R**
 in a damaged car for a repair and fresh paint. Car titles, tapes and reputation
 carry over when you continue. After the last job, visit Rosa’s diner again.
 
+## Sunset captures
+
+The four JPEGs come from playable scenes at seed 1706. With the local server
+running, append a query from [shots.json](shots.json) to its address to replay
+the same drive or walk. The optional `time` value sets the starting second on
+the city's clock. Each camera holds its final frame at native resolution.
+
+[Ocean Drive](screenshots/1-cover.jpg) · [Hot Wheels](screenshots/2-chase.jpg) · [Repo Man](screenshots/3-mission.jpg) · [Glasswater](screenshots/4-city.jpg)
+
 ## Run
-`node main.ts` (writes game/ + screenshots/ + dossier.json to /output).
+
+`node --test tests/core.test.mjs` exercises the fixed-step game, the character
+rigs, wheel stance and seeded street layout. `node main.ts` writes the static
+game, screenshots and scoring dossier to `/output`. Set `MAKEFUN_OUTPUT_DIR`
+to choose a local package directory.
 
 Referral: https://make.fun/r/ww3xv51q

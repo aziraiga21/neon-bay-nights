@@ -167,6 +167,7 @@ function climbIn(game, car) {
     const side=CARS[car.type].width*.5+5;
     const doors=[-1,1].map(sign=>({x:car.x-Math.sin(car.h)*side*sign,
         y:car.y+Math.cos(car.h)*side*sign,sign}));
+    // Check both sills against the footprint before selecting the nearest accessible door.
     const door=doors.filter(v=>!isSolid(game.world,v.x,v.y,7) && lineClear(game.world,p,v))
         .sort((a,b)=>dist(a,p)-dist(b,p))[0];
     if(!door)return false;
