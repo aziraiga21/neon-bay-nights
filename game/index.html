@@ -13,6 +13,22 @@
 .compact{max-height:94vh;overflow:auto}
 .logo span{color:#ffac97;text-shadow:2px 3px #6e486b}
 @media(prefers-reduced-motion:reduce){.actions button{transition:none}}
+/* Sunset matchbook lettering and the ruled edge of a dispatch slip. */
+:root{font-family:"Liberation Mono","Courier New",monospace}
+#screen{background:#231d3045}
+.panel,.compact{color:#fff2d7;background:#242035f5;border:0;border-top:4px double #efa586;border-radius:0;box-shadow:none;clip-path:polygon(0 0,calc(100% - 25px) 0,100% 25px,100% 100%,17px 100%,0 calc(100% - 17px))}
+.panel{width:min(580px,94vw);margin-right:auto;margin-left:5vw;padding:clamp(18px,3vh,36px) clamp(20px,4vw,56px)}
+.logo,.compact h1{font-family:Georgia,"Liberation Serif",serif;font-weight:bold;font-style:italic}
+.logo{font-size:clamp(54px,8vw,96px);color:#f9ddc0;text-shadow:2px 2px #242035,3px 3px #e48e80}
+.logo span,.gold{color:#ffaa89}
+.eyebrow{border-bottom:1px solid #ae827d;padding-bottom:10px;letter-spacing:2px;color:#acd7c9}
+.tagline{letter-spacing:2px;color:#ffba94}.story{font-family:Georgia,serif;font-size:17px;line-height:1.45}
+.actions button,.job-list button{border-radius:0;background:#383144;border:0;border-left:3px solid #8fcfc2;clip-path:polygon(0 0,100% 0,100% calc(100% - 7px),calc(100% - 7px) 100%,0 100%)}
+.actions button.primary{color:#261d32;background:#ffac88;box-shadow:none}.actions button:focus-visible,.job-list button:focus-visible{background:#69546a}
+.job-list button{border-bottom:1px dashed #94727b}.job-number{font:italic bold 28px Georgia,serif;color:#ffa888}
+.controls kbd{font-family:inherit;border-radius:0}.compact{max-height:94vh;overflow:auto}.ending{border-top-color:#ffbe75}
+.panel{position:relative}.logo{position:relative;isolation:isolate}.logo::before{content:"";position:absolute;z-index:-1;left:2.15em;bottom:.02em;width:1.28em;height:1.28em;border-radius:50%;background:repeating-linear-gradient(0deg,transparent 0 3px,#b86560 3px 9px);opacity:.65}
+.garage{background:#efd8b5;color:#342b39;border-top:6px double #96543e}.garage h1{color:#342b39}.garage .eyebrow,.garage .mini{color:#634639}.garage .job-list{gap:0}.garage .job-list button{background:transparent;color:#342b39;border:0;border-bottom:1px dashed #916a58;clip-path:none}.garage .job-list small{color:#564745}.garage .job-number,.garage .job-reward{color:#813d32}.garage .job-list button:hover:not(:disabled),.garage .job-list button:focus-visible{background:#ffeac9}.pause h1{border-left:6px double #f7b391;padding-left:12px}.ending h1{font-size:clamp(48px,8vw,84px);text-shadow:2px 2px #542f48}
 </style>
 </head><body>
 <canvas id="game" tabindex="0" aria-label="Neon Bay Nights game. WASD moves, Ctrl walks, Shift sprints and Space jumps. Hold the right mouse button to aim and left-click to attack. E enters a car. Escape pauses."></canvas>

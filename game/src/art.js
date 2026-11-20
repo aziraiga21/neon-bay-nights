@@ -30,7 +30,7 @@ export function round(ctx, x, y, w, h, r, fill, stroke) {
 }
 
 export function text(ctx, str, x, y, size, color, align = 'left') {
-    ctx.font = `bold ${size}px Arial, Helvetica, sans-serif`;
+    ctx.font = `${size >= 20 ? "italic bold" : "bold"} ${size}px ${size >= 20 ? "Georgia, serif" : "'Liberation Mono', monospace"}`;
     ctx.fillStyle = color;
     ctx.textAlign = align;
     ctx.textBaseline = 'alphabetic';
@@ -625,6 +625,24 @@ export function buildCityGeometry(world) {
         const length=Math.min(240,world.height-z);
         roadTile(2778,z+length/2,68,length,2);
     }
+    // Miter the ribbon at the sampled bends so the pavement has no seams.
+    for (const street of world.avenues) {
+        const edges=street.map((p,i)=>{
+            const a=street[Math.max(0,i-1)], b=street[Math.min(i+1,street.length-1)];
+            const length=Math.hypot(b.x-a.x,b.y-a.y);
+            return {x:(b.y-a.y)/length,z:(a.x-b.x)/length};
+        });
+        for(let i=1;i<street.length;i++){
+            const part=flatPart(1,1,0,0,'#ffffff'), pos=part.geo.attributes.position;
+            const uv=part.geo.attributes.uv;
+            for(let k=0;k<4;k++){
+                const j=k<2?i-1:i, side=k%2?1:-1;
+                pos.setXYZ(k,street[j].x+edges[j].x*side*43,.38,street[j].y+edges[j].z*side*43);
+                uv.setXY(k,(k%2 ? .331 : .002),k<2?.92:.08);
+            }
+            roads.push(part);
+        }
+    }
     function sidewalk(w,d,x,z) {
         const part=roundedPart(w,1,d,x,-.26,z,'#ffffff',.45);
         const pos=part.geo.attributes.position, uv=part.geo.attributes.uv;
@@ -635,6 +653,20 @@ export function buildCityGeometry(world) {
         sidewalk(279,279,x+192,z+192);
     sidewalk(24,world.height,2732,world.height/2);
     sidewalk(17,world.height,2820.5,world.height/2);
+    const plazaShape=new THREE.Shape();
+    world.plaza.forEach(([x,z],i)=>i ? plazaShape.lineTo(x,-z) : plazaShape.moveTo(x,-z));
+    plazaShape.closePath();
+    const plaza=new THREE.ShapeGeometry(plazaShape);
+    plaza.rotateX(-Math.PI/2);
+    plaza.translate(0,.34,0);
+    rest.push({geo:plaza,color:'#c79378'});
+    // Concentric terrazzo inlays mark the centre of the old turning garden.
+    for(const radius of [19,24,48]){
+        const ring=new THREE.RingGeometry(radius,radius+2,48);
+        ring.rotateX(-Math.PI/2);
+        ring.translate(1550,.37,1166);
+        rest.push({geo:ring,color:radius===24?'#488982':'#f6d5a8'});
+    }
     const ground=rest.splice(0);
     buildPier(rest,glow);
     // The lifting gantries stand on the container pads behind the wharf sheds.

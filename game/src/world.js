@@ -45,6 +45,30 @@ export function makeWorld(seed) {
             });
         }
     }
+    // The tram avenue cuts across four parcels. Palm Crescent skirts the
+    // old circular garden, joining the avenue at its southern entrance.
+    const avenue = [0, 8, 16, 24, 32].map(id => nodes[id]);
+    const crescent = [nodes[24]];
+    for (let i = 1; i < 6; i++) {
+        const angle = Math.PI / 2 * (1 - i / 6);
+        const node = {id:nodes.length, x:1408 + 384*Math.cos(angle),
+            y:1024 + 384*Math.sin(angle), links:[]};
+        nodes.push(node);
+        crescent.push(node);
+    }
+    crescent.push(nodes[18]);
+    world.plaza = [[1474,1090], [1726,1090],
+        ...[15,30,45,60,75].map(degrees => {
+            const angle=degrees*Math.PI/180;
+            return [1408+319*Math.cos(angle),1024+319*Math.sin(angle)];
+        }), [1474,1342]];
+    world.avenues = [avenue, crescent];
+    for (const street of world.avenues) {
+        for (let i = 1; i < street.length; i++) {
+            street[i-1].links.push(street[i].id);
+            street[i].links.push(street[i-1].id);
+        }
+    }
     let bid = 0;
     const addBuilding = (x, y, w, h, kind, district, extra = {}) => {
         const wall = district === 'Glasswater' ? P.glass : rng.pick([P.coral, P.cream, P.mint]);
@@ -58,6 +82,11 @@ export function makeWorld(seed) {
         for (let i = 0; i < 6; i++) {
             const x = ROADS_X[i] + 82, y = ROADS_Y[j] + 82, w = 220, h = 220;
             const district = j >= 4 ? 'Marlin Wharf' : i >= 4 ? 'Coral Mile' : 'Glasswater';
+            if (i === j && i < 4) {
+                addBuilding(x+4,y+164,50,52,'shop',district,{label:['SUNDIAL','ACETATE','BAY PRESS','MAJESTIC'][i]});
+                addBuilding(x+164,y+4,52,50,'shop',district,{label:['ORCHID','MARQUEE','LIDO','RIVIERA'][i]});
+                continue;
+            }
             if ((i === 3 && j === 2) || (i === 1 && j === 3)) {
                 parks.push({
                     x, y, w, h
@@ -202,6 +231,14 @@ export function makeWorld(seed) {
                 width:streetRng.range(2.6,5.3),length:streetRng.range(13,29),phase:streetRng.range(0,6)});
         }
     }
+    for (let i = props.length-1; i >= 0; i--) {
+        const p = props[i];
+        if (world.avenues.some(street => street.slice(1).some((b,j) => {
+            const a=street[j], dx=b.x-a.x, dy=b.y-a.y;
+            const t=clamp(((p.x-a.x)*dx+(p.y-a.y)*dy)/(dx*dx+dy*dy),0,1);
+            return Math.hypot(p.x-a.x-t*dx,p.y-a.y-t*dy)<48;
+        }))) props.splice(i,1);
+    }
     world.services = [
         {
             id: 'diner', name: 'Rosa’s Diner', short: 'ROSA’S DINER', x: 2444, y: 1336, kind: 'food', price: 40, icon: '+'
@@ -334,6 +371,7 @@ export function signalPhase(time,node) {
     return (time + node.i * 1.8 + node.j * 1.2) % 13;
 }
 export function signalGreen(time, node, horizontal) {
+    if (node.i === undefined) return true;
     const phase=signalPhase(time,node);
     return horizontal ? phase < 5.7 : phase > 6.5 && phase < 12.2;
 }

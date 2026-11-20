@@ -252,14 +252,14 @@ const controls = `<div class="controls"><div><kbd>WASD</kbd> / <kbd>↑↓←→
 
 function titleMarkup() {
     const saved = readSave();
-    return `<div class="panel"><p class="eyebrow">AN ORIGINAL OPEN-WORLD CRIME GAME</p><h1 class="logo">NEON BAY<br><span>NIGHTS</span></h1><p class="tagline">GOOD WEATHER. BAD DECISIONS.</p><p class="story"><strong>You’re Jax Marlowe.</strong> A courier with a dream of his own garage, in a city that never gives anything away.<br>Find a ride. Make some trouble. Lose the heat.<br>The bay is yours tonight.</p><div class="actions"><button data-action="${saved ? 'continue' : 'new'}" class="primary">${saved ? 'CONTINUE  ↗' : 'HIT THE STREETS  ↗'}</button>${saved ? '<button data-action="new">NEW GAME</button>' : ''}<button data-action="missions">ROSA’S JOBS</button></div>${controls}<p class="footer">CORAL MILE / GLASSWATER / MARLIN WHARF<br><br>100% ORIGINAL ART & SOUND · SAVES ON THIS DEVICE</p><p class="touch-note">Made for a keyboard and mouse.</p></div>`;
+    return `<div class="panel"><p class="eyebrow">GLASSWATER · CORAL MILE · MARLIN WHARF</p><h1 class="logo">NEON BAY<br><span>NIGHTS</span></h1><p class="tagline">GOOD WEATHER. BAD DECISIONS.</p><p class="story"><strong>You’re Jax Marlowe.</strong> A courier with a dream of his own garage, in a city that never gives anything away.<br>Find a ride. Make some trouble. Lose the heat.<br>The bay is yours tonight.</p><div class="actions"><button data-action="${saved ? 'continue' : 'new'}" class="primary">${saved ? 'CONTINUE  ↗' : 'HIT THE STREETS  ↗'}</button>${saved ? '<button data-action="new">NEW GAME</button>' : ''}<button data-action="missions">ROSA’S JOBS</button></div>${controls}<p class="footer">PROGRESS SAVED ON THIS DEVICE</p><p class="touch-note">Made for a keyboard and mouse.</p></div>`;
 }
 
 function pauseMarkup() {
     const saveNote = game.saveError
         ? 'Your browser could not save. Keep this tab open.'
         : 'Your progress has been saved on this device.';
-    return `<div class="compact"><p class="eyebrow">TAKE A BREATHER</p><h1>BAY ON HOLD.</h1><p class="story">${money(game.player.cash)} in your pocket. A whole city outside.<br>${saveNote}</p><div class="actions"><button class="primary" data-action="resume">BACK TO THE BAY</button><button data-action="missions">ROSA’S JOBS</button><button data-action="title">SAVE & TITLE</button><button data-action="music">MUSIC ${audio.musicEnabled ? 'ON' : 'OFF'}</button><button data-action="mute">SOUND ${audio.muted ? 'OFF' : 'ON'}</button></div>${controls}</div>`;
+    return `<div class="compact pause"><p class="eyebrow">NEON BAY · PAUSED</p><h1>BAY ON HOLD.</h1><p class="story">${money(game.player.cash)} in your pocket. A whole city outside.<br>${saveNote}</p><div class="actions"><button class="primary" data-action="resume">BACK TO THE BAY</button><button data-action="missions">ROSA’S JOBS</button><button data-action="title">SAVE & TITLE</button><button data-action="music">MUSIC ${audio.musicEnabled ? 'ON' : 'OFF'}</button><button data-action="mute">SOUND ${audio.muted ? 'OFF' : 'ON'}</button></div>${controls}</div>`;
 }
 
 function jobsMarkup() {
@@ -281,7 +281,7 @@ function garageMarkup(message='') {
         const owned=game.unlockedCars.has(type), price=GARAGE_PRICES[type];
         return `<button data-action="car-${type}" ${!owned && game.player.cash<price?'disabled':''}><strong>${CARS[type].name}</strong><span class="job-reward">${owned?'COLLECT':money(price)}</span></button>`;
     }).join('');
-    return `<div class="compact jobs"><p class="eyebrow">MARLOWE MOTOR CO.</p><h1>Your garage</h1><p class="mini">${money(game.player.cash)} · Buy a title or collect one of your cars.</p><div class="job-list">${rows}</div><p class="mini">${message}</p><div class="actions"><button class="primary" data-action="resume">BACK TO THE BAY</button></div></div>`;
+    return `<div class="compact jobs garage"><p class="eyebrow">MARLOWE MOTOR CO.</p><h1>Your garage</h1><p class="mini">${money(game.player.cash)} · Buy a title or collect one of your cars.</p><div class="job-list">${rows}</div><p class="mini">${message}</p><div class="actions"><button class="primary" data-action="resume">BACK TO THE BAY</button></div></div>`;
 }
 
 function failedMarkup() {

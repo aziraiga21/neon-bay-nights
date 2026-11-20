@@ -57,3 +57,24 @@ The complete rigged SwiftShader profile in `out/verify/rig-submission-profile.lo
 The final syntax check passed for all 19 changed or added JavaScript modules, including the test module. `node --test tests/core.test.mjs` exited successfully. Running the file directly reported 43 passed, zero failed and zero skipped. Two independent runs of seed 1706 through 7,200 ticks produced byte-identical dumps with SHA-256 `c4bb07e576317974104165027ecece52908b66a8dcbe9d731df7d9af571ba6c1`. A binary-inclusive search of the entire `game/` tree found zero occurrences of the four forbidden network patterns.
 
 Against f65d7be, the four required authorship paths all have content changes. The verification record adds the polish and rig measurements. The remaining three entries in the authorship diff stat are `game/vendor/RoundedBoxGeometry.js` (34 changed lines), `game/vendor/THREE-LICENSE.txt` (21) and `game/vendor/three.module.min.js` (1).
+
+## Map + HUD/UI recording 01a1f9ed-64e2-7a80-b9ae-1e3857598673
+
+The session began on clean main at ddfcfc7. A diagonal avenue crosses four former Glasswater blocks, opening paired triangular forecourts with shops in their outer corners. Palm Crescent turns through a quarter circle around a terracotta plaza with concentric terrazzo inlays. Both roads use the same sampled centerlines for traffic, pedestrian routes, police pathfinding, asphalt and the two maps. The original junction IDs and service coordinates remain valid. The new layout test samples both sidewalks on every new segment with pedestrian clearance.
+
+The menus use italic serif matchbook lettering, a striped sunset on the title and clipped dispatch slips. Marlowe’s garage uses the cream stock and ruled rows of a work order. On the HUD, segmented health, monospaced dispatch text and copper-edged instruments carry the same treatment through navigation and the wanted display. The wider Glasswater photo camera shows the new crossroads. The playable chase camera retains its existing settings.
+
+Two independent 7,200-tick runs at seed 1706 produced identical dumps. Both map-final JSON logs in out/verify/ have SHA-256 `1c1ea3d9cd3c8eb95c0166d964dc0cb1eae79bc63989fa44599e502d1af3043f`. The binary-inclusive scan of game/ returned zero files containing a forbidden network pattern.
+
+The required test command exited successfully (out/verify/map-final-core.log). Direct execution reported 44 passes, zero failures and zero skips (out/verify/map-final-individual.log). All six edited JavaScript modules including the test file passed node --check. The authorship diff against ddfcfc7 includes this verification section, the world and street renderer, the HUD, menu markup and styles, the city photo framing, the regression test and four JPEGs. I wrote the verification section in this recording.
+
+| Seed-1706 capture | JPEG bytes | Visual inspection of the final file |
+| --- | ---: | --- |
+| [Ocean Drive](screenshots/1-cover.jpg) | 170,443 | Pass. Sunset cover with the Mirage, coastal wheel and corrected driving-hint width. |
+| [Hot Wheels](screenshots/2-chase.jpg) | 196,792 | Pass. Three wanted stars, two pursuing cruisers and a legible escape objective. |
+| [Repo Man](screenshots/3-mission.jpg) | 179,388 | Pass. Jax has a distinct running stride beside the marked Mirage. |
+| [Glasswater](screenshots/4-city.jpg) | 241,763 | Pass. The diagonal meets Palm Crescent around the paved plaza. Both streets are visible on the minimap. |
+
+The first multi-shot browser process ended with status 143 while opening the city scene. Per-shot captures supplied the final city image and the two driving images after the HUD text-width correction. The mission JPEG came from the multi-shot process. Every final JPEG was opened from screenshots/ for inspection.
+
+At 320 × 200 on SwiftShader, the previous finish run recorded a 206.40 ms original-scene median, 35 draws and 49,992 triangles (out/verify/finish-profile.log). This recording measured 201.45 ms, 31 draws and 45,164 triangles. Its basic-material median was 92.35 ms, versus 160.90 ms in the previous complete rig profile. All six profiler modes completed (out/verify/map-profile.log). The original-scene median remains above the 40 ms target.

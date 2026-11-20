@@ -137,12 +137,33 @@ function farCorner(g) {
     return g;
 }
 
+test('tram avenue and Palm Crescent leave continuous sidewalks around the plaza', () => {
+    const { world } = makeGame();
+    const [avenue,crescent] = world.avenues;
+    assert.ok(avenue.every(p=>p.x===p.y));
+    const a=crescent[0], b=crescent.at(-1), mid=crescent[Math.floor(crescent.length/2)];
+    assert.ok(Math.abs((b.x-a.x)*(mid.y-a.y)-(b.y-a.y)*(mid.x-a.x))>10000);
+    assert.ok(world.plaza.length>4);
+    for (const street of world.avenues) for(let i=1;i<street.length;i++) {
+        const start=street[i-1], end=street[i], dx=end.x-start.x, dy=end.y-start.y;
+        const len=Math.hypot(dx,dy);
+        for(let k=0;k<=32;k++) for(const side of [-66,66]) {
+            assert.equal(isSolid(world,start.x+dx*k/32-dy/len*side,start.y+dy*k/32+dx/len*side,6),false);
+        }
+    }
+});
+
 test('deterministic, connected city; all important positions are accessible', () => {
     const a = makeGame();
     const b = makeGame();
     assert.deepEqual(a.world.buildings, b.world.buildings);
     assert.deepEqual(a.cars, b.cars);
-    assert.equal(a.world.nodes.length, 49);
+    for (const street of a.world.avenues) {
+        for (let i=1;i<street.length;i++) {
+            assert.ok(street[i].links.includes(street[i-1].id));
+            assert.ok(lineClear(a.world,street[i-1],street[i]));
+        }
+    }
     for (const p of [a.world.spawn, ...a.world.services, ...a.world.gangSpawns]) {
         assert.equal(isSolid(a.world, p.x, p.y, 8), false, JSON.stringify(p));
     }

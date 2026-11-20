@@ -111,7 +111,7 @@ export function createShot(name, game, startTime=150) {
                     cover: {dx:-46,dy:19,dz:65,tx:-8,ty:12,tz:-8},
                     chase: {dx:-41,dy:17,dz:69,tx:1,ty:11,tz:-12},
                     mission: {dx:14,dy:23,dz:63,tx:-12,ty:13,tz:-12},
-                    city: {dx:32,dy:27,dz:74,tx:5,ty:16,tz:-13}
+                    city: {dx:-115,dy:178,dz:175,tx:108,ty:6,tz:-90}
                 }[name];
             }
         }

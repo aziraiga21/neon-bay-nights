@@ -40,6 +40,18 @@ export function makeMap(world) {
     for (const y of ROADS_Y) ctx.fillRect(0, (y - 52) * sy, 2780*sx, 104 * sy);
     ctx.fillStyle='#9a9ba7';
     ctx.fillRect(2744*sx,0,68*sx,MAP_H);
+    polygon(ctx,world.plaza.map(([x,y])=>[x*sx,y*sy]),'#ab8279');
+    ctx.save();
+    ctx.scale(sx,sy);
+    ctx.strokeStyle='#ecb387';
+    ctx.lineWidth=86;
+    ctx.lineJoin='round';
+    for(const street of world.avenues){
+        ctx.beginPath();
+        street.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));
+        ctx.stroke();
+    }
+    ctx.restore();
     for (const b of world.buildings || []) {
         ctx.fillStyle = b.district==='Marlin Wharf'?'#766c79':b.district==='Coral Mile'?'#a77f86':'#67818d';
         ctx.fillRect(b.x * sx, b.y * sy, Math.max(2, b.w * sx), Math.max(2, b.h * sy));
@@ -129,7 +141,9 @@ export function drawHUD(ctx, game, renderer) {
 }
 
 function panel(ctx, x, y, pw, ph) {
-    round(ctx,x,y,pw,ph,5,'#161b30eb','#addbd331');
+    polygon(ctx,[[x,y],[x+pw-12,y],[x+pw,y+12],[x+pw,y+ph],[x+7,y+ph],[x,y+ph-7]],'#221c30ed','#b68a94');
+    ctx.fillStyle='#e8997d';
+    ctx.fillRect(x+8,y,pw*.24,2);
 }
 
 function drawVitals(ctx, game) {
@@ -142,6 +156,8 @@ function drawVitals(ctx, game) {
     const pct=clamp(p.health/100,0,1);
     round(ctx,29,59,163,6,3,'#40344a');
     if(pct) round(ctx,29,59,163*pct,6,3,pct>.5?'#73dbb4':P.carCoral);
+    ctx.fillStyle='#221c30';
+    for(let i=1;i<10;i++)ctx.fillRect(29+16.3*i,58,2,8);
     text(ctx,Math.ceil(p.health)+'',215,67,10,P.paper,'right');
     text(ctx,'AMMO  '+p.ammo,29,91,12,P.paper);
     text(ctx,p.car?'ENGINE  '+Math.ceil(p.car.hp):'ON FOOT',215,91,11,'#b2c6d4','right');
@@ -177,7 +193,7 @@ function drawObjective(ctx, game, w) {
         : game.fare?'BAY CAB  /  '+(game.fare.stage==='pickup'?'PICKUP':'METER RUNNING')
         : waypoint?'NAVIGATION':m.marker?'AFTER HOURS':'FREE ROAM';
     const body=waypoint?waypoint.label:m.objective || '';
-    ctx.font='bold 14px Arial';
+    ctx.font="bold 14px Liberation Mono, monospace";
     const pw=clamp(ctx.measureText(body).width+38,310,630);
     const x=(w-pw)/2;
     panel(ctx,x,15,pw,56);
@@ -198,7 +214,7 @@ function drawMinimap(ctx, game, renderer, h) {
     const x = 14;
     const y = h - MINI_H - 14;
     const map = renderer?.map;
-    round(ctx, x - 3, y - 3, MINI_W + 6, MINI_H + 6, 6, '#18333BE6', P.ink);
+    panel(ctx,x-4,y-4,MINI_W+8,MINI_H+8);
     if (map) {
         ctx.save();
         ctx.beginPath();
@@ -224,7 +240,7 @@ function drawSpeed(ctx, game, w, h) {
     const x=w-196,y=h-102;
     panel(ctx,x,y,180,85);
     text(ctx,CARS[car.type].name.toUpperCase(),x+13,y+21,11,'#a7ded8');
-    ctx.font='italic bold 40px Arial';ctx.fillStyle=P.paper;ctx.textAlign='right';
+    ctx.font='italic bold 40px Georgia, serif';ctx.fillStyle=P.paper;ctx.textAlign='right';
     ctx.fillText(mph,x+122,y+61);
     text(ctx,car.speed<-4?'REV':'MPH',x+132,y+59,12,'#ffc981');
     for(let i=0;i<19;i++){
@@ -237,7 +253,7 @@ function drawSpeed(ctx, game, w, h) {
 function drawToast(ctx, game, w) {
     const t = game.toast;
     if (!t || game.time > t.until) return;
-    ctx.font='bold 12px Arial';
+    ctx.font='bold 13px Liberation Mono, monospace';
     const tw=Math.max(ctx.measureText(t.title).width,ctx.measureText(t.sub || '').width);
     const pw = clamp(tw + 44, 220, 560);
     const x = (w - pw) / 2;
@@ -273,7 +289,7 @@ function drawHint(ctx, game, w, h) {
         }
         hint = near ? 'E ENTER / STEAL CAR' : 'SPACE JUMP · RMB AIM · LMB ATTACK · TAB MAP';
     }
-    ctx.font='bold 11px Arial';
+    ctx.font='bold 11px Liberation Mono, monospace';
     const sw=ctx.measureText(hint).width+22, y=p.car?h-134:h-45;
     panel(ctx,w-sw-16,y,sw,24);text(ctx,hint,w-27,y+16,11,'#e4e5e4','right');
 }
