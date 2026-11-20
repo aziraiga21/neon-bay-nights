@@ -44,8 +44,25 @@ export const CARS = {
 export const GARAGE_PRICES = {sedan:300, taxi:450, van:550, sports:1200};
 export const TAPE_COUNT = 10;
 export const TUNE = {
-    walk: 105, sprint: 172, playerRadius: 7, enterDistance: 53, shotInterval: .26, maxAmmo: 120, heatThresholds: [0, .9, 3.2, 6.2, 10.5, 16], loseSight: 10
+    walk: 34, jog: 64, run: 107, sprint: 172, playerRadius: 7, enterDistance: 53, shotInterval: .26, maxAmmo: 120, heatThresholds: [0, .9, 3.2, 6.2, 10.5, 16], loseSight: 10
 };
+// Speeds are world units/second, turn limits radians/second and FOV degrees.
+export const GEARS = [
+    { speed: TUNE.walk, turn: 2*Math.PI, distance:82, height:38, fov:55, ahead:30, follow:6, yaw:3.2 },
+    { speed: TUNE.jog, turn: 4*Math.PI/3, distance:86, height:40, fov:57, ahead:38, follow:5.5, yaw:3 },
+    { speed: TUNE.run, turn: 5*Math.PI/6, distance:92, height:42, fov:60, ahead:48, follow:5, yaw:2.6 },
+    { speed: TUNE.sprint, turn: Math.PI/2, distance:100, height:44, fov:65, ahead:58, follow:4.5, yaw:2.2 }
+];
+// Rest lengths in world units, shared by the skin and stance solver.
+export const LEG = Object.freeze({ thigh: 7.5, shin: 6.5, ankleHeight: 1.48 });
+export const HIP_HEIGHT = LEG.thigh + LEG.shin + LEG.ankleHeight;
+export const JUMP = { height:20, duration:.65, gravity:8*20/.65**2, takeoff:4*20/.65 };
+export function gearValue(speed, key, rows = GEARS) {
+    let i = 1;
+    while (i < GEARS.length-1 && speed > GEARS[i].speed) i++;
+    const t = clamp((speed-GEARS[i-1].speed)/(GEARS[i].speed-GEARS[i-1].speed), 0, 1);
+    return lerp(rows[i-1][key], rows[i][key], t);
+}
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const lerp = (a, b, t) => a + (b - a) * t;
 export const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);

@@ -1,4 +1,8 @@
 import { clamp } from './config.js';
+const BASS_NOTES = [55, 55, 65.41, 49];
+const LEAD_NOTES = [440, 523.25, 659.25, 587.33, 523.25, 392, 440, 329.63];
+const LEAD_BEATS = new Set([1, 4, 7, 10, 13, 17, 20, 23, 26, 29]);
+
 export class Audio {
     constructor(settings = {}) {
         this.muted = !!settings.muted;
@@ -161,7 +165,7 @@ export class Audio {
         }
         while (this.nextBeat < t + .12) {
             const delay = Math.max(0, this.nextBeat - t), b = this.beat % 32;
-            const bass = [55, 55, 65.41, 49][Math.floor(b / 8)];
+            const bass = BASS_NOTES[Math.floor(b / 8)];
             if (b % 2 === 0) {
                 this.tone(bass, b % 8 === 0 ? .35 : .18, 'triangle', .22, delay, this.music);
             }
@@ -172,9 +176,8 @@ export class Audio {
             if (b % 4 === 0) {
                 this.tone(115, .12, 'sine', .35, delay, this.music, 35);
             }
-            const notes = [440, 523.25, 659.25, 587.33, 523.25, 392, 440, 329.63];
-            if ([1, 4, 7, 10, 13, 17, 20, 23, 26, 29].includes(b)) {
-                const note = notes[(Math.floor(b / 3) + Math.floor(this.beat / 32)) % notes.length];
+            if (LEAD_BEATS.has(b)) {
+                const note = LEAD_NOTES[(Math.floor(b / 3) + Math.floor(this.beat / 32)) % LEAD_NOTES.length];
                 this.tone(note, .28, 'sine', .12, delay, this.music);
                 this.tone(note * 2, .19, 'triangle', .025, delay, this.music);
             }

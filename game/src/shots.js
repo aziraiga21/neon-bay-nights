@@ -9,7 +9,6 @@ export function createShot(name, game) {
     if (!['cover', 'chase', 'mission', 'city'].includes(name)) return null;
     const input = game.input;
     input.clear();
-    input.mouse.aim = false;
     game.toast = null;
     game.lastSave = Infinity;
     let frame = 0, ready = false;
@@ -79,7 +78,7 @@ export function createShot(name, game) {
             input.keys.clear();
             input.pressed.clear();
             if (name === 'mission') {
-                if (frame > 66) input.keys.add('KeyW');
+                if(frame>55){input.keys.add('KeyW');input.keys.add('ShiftLeft');}
             } else if (name === 'city') {
                 if (frame > 53) input.keys.add('KeyW');
             } else {
@@ -107,10 +106,10 @@ export function createShot(name, game) {
                 input.clear();
                 // Capture framing alone is fixed; actor positions come from the simulation above.
                 game.camera.photo = {
-                    cover: {dx:-26,dy:26,dz:77,tx:-2,ty:14,tz:-10},
-                    chase: {dx:-34,dy:23,dz:70,tx:1,ty:10,tz:-12},
-                    mission: {dx:0,dy:32,dz:68,tx:-14,ty:17,tz:-12},
-                    city: {dx:-3,dy:35,dz:81,tx:4,ty:20,tz:-12}
+                    cover: {dx:-46,dy:19,dz:65,tx:0,ty:12,tz:-8},
+                    chase: {dx:-41,dy:17,dz:69,tx:1,ty:11,tz:-12},
+                    mission: {dx:-27,dy:21,dz:65,tx:-10,ty:13,tz:-10},
+                    city: {dx:32,dy:27,dz:74,tx:5,ty:16,tz:-13}
                 }[name];
             }
         }

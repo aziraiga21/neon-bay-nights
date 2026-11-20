@@ -163,7 +163,9 @@ export function updateVehicles(game, dt) {
             continue;
         }
         const driven = c === game.player.car;
-        if (driven) {
+        if(game.player.transition?.kind==='enter' && game.player.transition.car===c){
+            c.throttle=0;c.braking=true;c.steer=0;
+        } else if (driven) {
             const axis = game.input.axes();
             c.throttle = -axis.y;
             c.steer = axis.x;
@@ -189,8 +191,8 @@ export function updateVehicles(game, dt) {
 // same physical world, so both cars in a hit share the push.
 function resolveCollisions(game) {
     for (let i = 0; i < game.cars.length; i++) {
+        const a = game.cars[i];
         for (let j = i + 1; j < game.cars.length; j++) {
-            const a = game.cars[i];
             const b = game.cars[j];
             const dx = b.x - a.x;
             const dy = b.y - a.y;
@@ -271,6 +273,7 @@ function stepCar(game, c, dt, driven) {
             }
         }
     }
+    c.travel+=c.speed*dt;
     leaveSkidMarks(game, c, dt, driven);
     if (driven) {
         game.stats.distance += Math.abs(c.speed) * dt;
@@ -288,8 +291,8 @@ function stepCar(game, c, dt, driven) {
 }
 
 function leaveSkidMarks(game, c, dt, driven) {
-    const slip = Math.abs(angleDelta(c.h, Math.atan2(c.vy, c.vx)));
     if (!driven || Math.abs(c.speed) <= 95) return;
+    const slip = Math.abs(angleDelta(c.h, Math.atan2(c.vy, c.vx)));
     if (!(Math.abs(c.steer) > 0.65 || c.handbrake || slip > 0.35)) return;
     c.skidTimer = (c.skidTimer || 0) - dt;
     if (c.skidTimer > 0) return;

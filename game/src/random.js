@@ -9,7 +9,8 @@ export function createRandom(seed = CITY_SEED) {
         return ((n ^ (n >>> 14)) >>> 0) / 4294967296;
     };
     random.range = (a, b) => a + (b - a) * random();
+    // int includes both ends. A pick advances the same stream by one draw.
     random.int = (a, b) => Math.floor(random.range(a, b + 1));
-    random.pick = a => a[Math.floor(random() * a.length)];
+    random.pick = items => items[random.int(0, items.length - 1)];
     return random;
 }

@@ -4,13 +4,13 @@ export class Input {
         this.keys = new Set();
         this.pressed = new Set();
         this.mouse = {
-            x: 0, y: 0, down: false, aim: false
+            x: 0, y: 0, aim: false
         };
         this.canvas = canvas;
         window.addEventListener('keydown', e => {
             // Let menu buttons keep native keyboard activation and focus navigation.
             if (e.target?.closest?.('#screen') && ['Tab', 'Space', 'Enter'].includes(e.code)) return;
-            if (BLOCKED.has(e.code)) {
+            if (BLOCKED.has(e.code) || (e.ctrlKey && ['KeyW','KeyA','KeyS','KeyD'].includes(e.code))) {
                 e.preventDefault();
             }
             if (!this.keys.has(e.code)) {
@@ -19,20 +19,22 @@ export class Input {
             this.keys.add(e.code);
         });
         window.addEventListener('keyup', e => this.keys.delete(e.code));
-        canvas.addEventListener('pointermove', e => {
-            const r = canvas.getBoundingClientRect();
-            this.mouse.x = e.clientX - r.left;
-            this.mouse.y = e.clientY - r.top;
-            this.mouse.aim = true;
+        const point=e=>{
+            const r=canvas.getBoundingClientRect();
+            this.mouse.x=e.clientX-r.left;this.mouse.y=e.clientY-r.top;
+        };
+        canvas.addEventListener('pointermove',point);
+        // Mouse events report each button in a chord, including fire while aiming.
+        canvas.addEventListener('mousedown',e=>{
+            point(e);
+            if(e.button===0)this.pressed.add('MouseLeft');
+            if(e.button===2)this.mouse.aim=true;
+            canvas.focus();
         });
-        canvas.addEventListener('pointerdown', e => {
-            if (e.button === 0) {
-                this.mouse.down = true;
-                this.mouse.aim = true;
-                canvas.focus();
-            }
+        window.addEventListener('mouseup',e=>{
+            if(e.button===2)this.mouse.aim=false;
         });
-        window.addEventListener('pointerup', () => this.mouse.down = false);
+        window.addEventListener('pointercancel',()=>this.clear());
         canvas.addEventListener('contextmenu', e => e.preventDefault());
         window.addEventListener('blur', () => this.clear());
     }
@@ -52,7 +54,6 @@ export class Input {
     clear() {
         this.keys.clear();
         this.pressed.clear();
-        this.mouse.down = false;
         this.mouse.aim = false;
     }
     axes() {

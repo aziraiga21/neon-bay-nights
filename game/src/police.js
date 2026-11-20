@@ -8,6 +8,7 @@
 // buys Jax his clean getaway.
 import { PALETTE as P, TUNE, clamp, angleDelta, dist } from './config.js';
 import { nearestNode, route, lineClear, moveCircle, isSolid } from './world.js';
+import {npcSpeed,finishNpcStep} from './locomotion.js';
 import { makeCar } from './vehicles.js';
 
 const SIGHT_CAR = 520;
@@ -15,7 +16,7 @@ const SIGHT_FOOT = 300;
 const WITNESS_CAR = 320;
 const WITNESS_FOOT = 260;
 const MAX_UNITS = 5;
-const OFFICER_SPEED = 104;
+const OFFICER_SPEED = TUNE.run;
 const BUST_RATE = 0.55;
 const BUST_COOL = 0.25;
 const HEAT_CREEP = 0.1;
@@ -254,7 +255,7 @@ function steerUnits(game, dt) {
         unit.repath -= dt;
         if (unit.repath <= 0 || unit.path.length === 0) {
             unit.path = route(game.world, nearestNode(game.world, car.x, car.y).id,
-                nearestNode(game.world, p.x, p.y).id).map(n => ({ x: n.x, y: n.y }));
+                nearestNode(game.world, p.x, p.y).id);
             unit.repath = 0.9;
         }
         // Drop junctions the cruiser has already rolled past, so it never
@@ -297,19 +298,24 @@ function marchOfficers(game, dt) {
     for (let i = pol.officers.length - 1; i >= 0; i--) {
         const officer = pol.officers[i];
         if (officer.dead) continue;
+        const x=officer.x,y=officer.y;
         if (pol.stars === 0) {
             officer.leaving = (officer.leaving || 0) + dt;
             const away = Math.atan2(officer.y - p.y, officer.x - p.x);
             officer.h = away;
-            moveCircle(game.world, officer, Math.cos(away) * 80 * dt, Math.sin(away) * 80 * dt, 7);
+            const step=npcSpeed(officer,TUNE.walk,dt)*dt;
+            moveCircle(game.world,officer,Math.cos(away)*step,Math.sin(away)*step,7);
+            finishNpcStep(officer,x,y,dt);
             if (officer.leaving > 5 || dist(officer, p) > 800) pol.officers.splice(i, 1);
             continue;
         }
         const angle = Math.atan2(p.y - officer.y, p.x - officer.x);
         officer.h = angle;
-        officer.moving = true;
-        moveCircle(game.world, officer, Math.cos(angle) * OFFICER_SPEED * dt,
-            Math.sin(angle) * OFFICER_SPEED * dt, 7);
+        const remaining = dist(officer,p);
+        const speed = npcSpeed(officer, remaining > 1 ? OFFICER_SPEED : 0, dt);
+        const step = Math.min(remaining, speed*dt);
+        moveCircle(game.world,officer,Math.cos(angle)*step,Math.sin(angle)*step,7);
+        finishNpcStep(officer,x,y,dt);
         const d = dist(officer, p);
         if (!p.car && d < BUST_REACH) {
             closing = true;

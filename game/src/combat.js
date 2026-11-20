@@ -8,6 +8,7 @@
 import { PALETTE as P, TUNE, clamp, angleDelta, dist } from './config.js';
 import { isSolid, lineClear, moveCircle } from './world.js';
 import { damageCar } from './vehicles.js';
+import {npcSpeed,finishNpcStep} from './locomotion.js';
 import { hurtPlayer } from './player.js';
 import { missionEvent } from './missions.js';
 
@@ -19,8 +20,8 @@ const FIST_REACH = 34;
 const FIST_SWING_SECONDS = 0.35;
 const RIVAL_BOUNTY = 100;
 const OFFICER_BOUNTY = 50;
-const CHASE_SPEED = 88;
-const STROLL_SPEED = 30;
+const CHASE_SPEED = TUNE.run;
+const STROLL_SPEED = TUNE.walk;
 const SIGHT_RANGE = 300;
 const SHOOT_MIN = 70;
 const SHOOT_MAX = 360;
@@ -59,27 +60,24 @@ export function updateCombat(game, dt) {
     const p = game.player;
     p.shotCooldown = Math.max(0, (p.shotCooldown || 0) - dt);
     p.punchCooldown = Math.max(0, (p.punchCooldown || 0) - dt);
-    handlePlayerAttack(game, dt);
+    handlePlayerAttack(game);
     stepBullets(game, dt);
     stepRivals(game, dt);
 }
 
 // --- Jax's own attacks -----------------------------------------------------
 
-function aimAngle(game) {
+function handlePlayerAttack(game) {
     const p = game.player;
-    if (game.input.mouse.aim && (game.input.mouse.down || p.armed)) {
-        const spot = game.screenToWorld(game.input.mouse.x, game.input.mouse.y);
-        return Math.atan2(spot.y - p.y, spot.x - p.x);
-    }
-    return p.h;
-}
+    const click=game.input.tap('MouseLeft');
+    const fist=game.input.tap('KeyF');
+    if(p.z>0 || p.transition || p.health<=0)return;
+    if(!click && !fist)return;
+    const close=click && !p.car && !p.armed && (nearestFoe(game,p) || nearbyWalker(game,p));
+    if(!p.car && (fist || (click && (!p.ammo || close)))){
+        if(p.punchCooldown<=0 && p.shotCooldown<=0)swingFist(game);
+    }else if(click && p.shotCooldown<=0 && p.punchCooldown<=0)firePistol(game);
 
-function handlePlayerAttack(game, dt) {
-    const p = game.player;
-    const wantShot = game.input.down('Space') || (game.input.mouse.aim && game.input.mouse.down);
-    if (wantShot && p.shotCooldown <= 0) firePistol(game);
-    if (game.input.tap('KeyF') && p.punchCooldown <= 0) swingFist(game);
 }
 
 function firePistol(game) {
@@ -92,11 +90,11 @@ function firePistol(game) {
     p.ammo -= 1;
     p.shotCooldown = TUNE.shotInterval;
     game.stats.shots += 1;
-    const angle = aimAngle(game);
+    const angle=p.armed?p.fireHeading:p.h;
     const reach = p.car ? 26 : 20;
     const mx = p.x + Math.cos(angle) * reach;
     const my = p.y + Math.sin(angle) * reach;
-    p.flash = 0.09;
+    p.flash = 0.09;p.recoil=.08;
     p.fireHeading = angle;
     game.bullets.push({
         x: mx, y: my,
@@ -114,23 +112,28 @@ function firePistol(game) {
 
 function swingFist(game) {
     const p = game.player;
+    p.punchLeft=!p.punchLeft;
     p.punch = FIST_SWING_SECONDS;
     p.punchCooldown = FIST_SWING_SECONDS;
     game.audio.play('punch');
     const victim = nearestFoe(game, p);
     if (victim) {
+        p.hitStop=.06;
         hurtFoe(game, victim, FIST_DAMAGE, p);
         return;
     }
-    const bystander = game.peds.find(
-        ped => !ped.dead && !ped.inCab && dist(ped, p) < FIST_REACH &&
-            Math.abs(angleDelta(p.h, Math.atan2(ped.y - p.y, ped.x - p.x))) < 1.15
-    );
+    const bystander=nearbyWalker(game,p);
     if (bystander) {
+        p.hitStop=.06;
         bystander.scared = 3;
         bystander.fleeX = p.x;
         bystander.fleeY = p.y;
     }
+}
+
+function nearbyWalker(game,p){
+    return game.peds.find(ped=>!ped.dead && !ped.inCab && dist(ped,p)<FIST_REACH &&
+        Math.abs(angleDelta(p.h,Math.atan2(ped.y-p.y,ped.x-p.x)))<1.15);
 }
 
 function nearestFoe(game, p) {
@@ -263,20 +266,25 @@ function stepRivals(game, dt) {
         if (d < SIGHT_RANGE && lineClear(game.world, e, p)) e.aggro = 1;
         else if (d > 430) e.aggro = 0;
         e.moving = false;
+        const x=e.x,y=e.y;
         if (!e.aggro) {
             strollHome(game, e, dt);
+            finishNpcStep(e,x,y,dt);
             continue;
         }
         e.h = Math.atan2(p.y - e.y, p.x - e.x);
         if (d > 30) {
-            moveCircle(game.world, e, Math.cos(e.h) * CHASE_SPEED * dt, Math.sin(e.h) * CHASE_SPEED * dt, 7);
+            const stride=npcSpeed(e,CHASE_SPEED,dt)*dt;
+            moveCircle(game.world,e,Math.cos(e.h)*stride,Math.sin(e.h)*stride,7);
             e.moving = true;
         } else if (e.cooldown <= 0) {
+            e.punchLeft=!e.punchLeft;
             e.punch = 0.3;
             e.cooldown = 0.9;
             hurtPlayer(game, 9);
             game.audio.play('punch', 0.7);
         }
+        finishNpcStep(e,x,y,dt);
         if (e.armed && d > SHOOT_MIN && d < SHOOT_MAX && e.cooldown <= 0 && lineClear(game.world, e, p)) {
             const angle = Math.atan2(p.y - e.y, p.x - e.x) + game.rng.range(-0.06, 0.06);
             game.bullets.push({
@@ -296,11 +304,12 @@ function stepRivals(game, dt) {
 }
 
 function strollHome(game, e, dt) {
+    const stride=npcSpeed(e,STROLL_SPEED,dt)*dt;
     const homeD = dist(e, e.home);
     if (homeD > 60) {
         const angle = Math.atan2(e.home.y - e.y, e.home.x - e.x);
         e.h = angle;
-        moveCircle(game.world, e, Math.cos(angle) * 42 * dt, Math.sin(angle) * 42 * dt, 7);
+        moveCircle(game.world, e, Math.cos(angle) * stride, Math.sin(angle) * stride, 7);
         e.moving = true;
         return;
     }
@@ -314,7 +323,7 @@ function strollHome(game, e, dt) {
     if (d > 12) {
         const angle = Math.atan2(e.ty - e.y, e.tx - e.x);
         e.h = angle;
-        moveCircle(game.world, e, Math.cos(angle) * STROLL_SPEED * dt, Math.sin(angle) * STROLL_SPEED * dt, 7);
+        moveCircle(game.world, e, Math.cos(angle) * stride, Math.sin(angle) * stride, 7);
         e.moving = true;
     }
 }

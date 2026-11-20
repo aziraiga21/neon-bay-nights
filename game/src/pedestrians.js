@@ -3,13 +3,11 @@
 // other, the way real foot traffic does: along a block, across at the
 // crosswalk when they feel like it, never through a building. A speeding
 // car, a shove, or a gunshot turns a stroll into a sprint for cover.
-import { PALETTE as P, SKINS, HAIR, clamp } from './config.js';
+import { PALETTE as P, SKINS, HAIR, TUNE, clamp } from './config.js';
+import {makeGait,npcSpeed,finishNpcStep} from './locomotion.js';
 import { nearestNode, moveCircle } from './world.js';
 
 const MAX_PEDS = 130;
-const WALK_MIN = 34;
-const WALK_MAX = 58;
-const FLEE_SPEED = 150;
 const SIDEWALK = 66;
 const JACKETS = ['#0E7C86', '#C46B4A', '#7C9F87', '#E7746F', '#F0B429', '#243056', '#B7E4C7', '#E7E1D6'];
 const TROUSERS = ['#2C3138', '#5A4A3A', '#3A4A5A', '#6B5A4A'];
@@ -64,11 +62,12 @@ function dress(game) {
 
 export function addPed(game, x, y, flee = false) {
     if (game.peds.length >= MAX_PEDS) return null;
+    const id = game.nextPedId++;
     const ped = {
-        id: 2000 + game.peds.length,
+        id,
         x, y, h: 0,
         ...dress(game),
-        speed: game.rng.range(WALK_MIN, WALK_MAX),
+        speed: TUNE.walk, gait:makeGait(id),
         moving: true,
         scared: flee ? 2.5 : 0,
         fleeX: game.player.x,
@@ -81,6 +80,7 @@ export function addPed(game, x, y, flee = false) {
         from: 0, to: 1, t: 0, side: 1
     };
     snapToGraph(game, ped);
+    if(flee){ped.x=x;ped.y=y;}
     game.peds.push(ped);
     return ped;
 }
@@ -100,6 +100,7 @@ export function leaveCab(game,ped,spot) {
 // foot traffic from the first frame.
 export function populatePeds(game) {
     game.peds = [];
+    game.nextPedId = 2000;
     for (let i = 0; i < 64; i++) {
         const node = game.rng.pick(game.world.nodes);
         const link = game.rng.pick(node.links);
@@ -121,27 +122,20 @@ export function populatePeds(game) {
 
 export function updatePeds(game, dt) {
     for (const ped of game.peds) {
-        if (ped.inCab || (ped.hailing && !ped.dead)) {ped.moving=false;continue;}
-        if (ped.dead) {
-            ped.deadTime += dt;
-            continue;
+        if(ped.dead){ped.deadTime+=dt;continue;}
+        const x=ped.x,y=ped.y;
+        ped.flash=Math.max(0,(ped.flash||0)-dt);
+        if(ped.inCab || ped.hailing){
+            npcSpeed(ped,0,dt);
+        }else{
+            if(ped.scared<=0)noticeDanger(game,ped);
+            npcSpeed(ped,ped.scared>0?TUNE.run:ped.wait>0?0:TUNE.walk,dt);
+            if(ped.scared>0)runAway(game,ped,dt);
+            else if(ped.wait>0)ped.wait-=dt;
+            else if(ped.crossing)crossStreet(game,ped,dt);
+            else stroll(game,ped,dt);
         }
-        ped.flash = Math.max(0, (ped.flash || 0) - dt);
-        if (ped.scared <= 0) noticeDanger(game, ped);
-        if (ped.scared > 0) {
-            runAway(game, ped, dt);
-            continue;
-        }
-        if (ped.wait > 0) {
-            ped.wait -= dt;
-            ped.moving = false;
-            continue;
-        }
-        if (ped.crossing) {
-            crossStreet(game, ped, dt);
-            continue;
-        }
-        stroll(game, ped, dt);
+        finishNpcStep(ped,x,y,dt);
     }
     if (game.peds.some(p => p.dead && p.deadTime > 25)) {
         game.peds = game.peds.filter(p => !p.dead || p.deadTime <= 25);
@@ -152,9 +146,9 @@ export function updatePeds(game, dt) {
 // speeding — sends them running.
 function noticeDanger(game, ped) {
     for (const car of game.cars) {
-        if (car.wreck) continue;
-        const d = Math.hypot(car.x - ped.x, car.y - ped.y);
-        if (d < 46 && Math.abs(car.speed) > 55) {
+        if (car.wreck || Math.abs(car.speed) <= 55) continue;
+        const dx = car.x - ped.x, dy = car.y - ped.y;
+        if (dx*dx + dy*dy < 46*46) {
             ped.scared = 2;
             ped.fleeX = car.x;
             ped.fleeY = car.y;
@@ -177,7 +171,7 @@ function runAway(game, ped, dt) {
     const angle = Math.atan2(ped.y - ped.fleeY, ped.x - ped.fleeX);
     ped.h = angle;
     ped.moving = true;
-    moveCircle(game.world, ped, Math.cos(angle) * FLEE_SPEED * dt, Math.sin(angle) * FLEE_SPEED * dt, 7);
+    moveCircle(game.world, ped, Math.cos(angle) * ped.speed * dt, Math.sin(angle) * ped.speed * dt, 7);
     if (ped.scared <= 0) {
         ped.scared = 0;
         snapToGraph(game, ped);
@@ -188,14 +182,13 @@ function runAway(game, ped, dt) {
 // to the other, so the move reads as a crosswalk crossing.
 function crossStreet(game, ped, dt) {
     const c = ped.crossing;
-    c.k += dt / 1.1;
+    c.k += ped.speed*dt / Math.max(1,Math.hypot(c.tx-c.fx,c.ty-c.fy));
     ped.moving = true;
     if (c.k >= 1) {
         ped.x = c.tx;
         ped.y = c.ty;
-        ped.side = -ped.side;
-        ped.crossing = null;
-        pickNextLeg(game, ped);
+        ped.crossing=null;
+        if(!c.join){ped.side=-ped.side;pickNextLeg(game,ped);}
         return;
     }
     ped.x = c.fx + (c.tx - c.fx) * c.k;
@@ -263,4 +256,7 @@ function pickNextLeg(game, ped, stay = false) {
     ped.from = ped.to;
     ped.to = next;
     ped.t = 0;
+    const spot=graphPoint(world,ped);
+    if(Math.hypot(spot.x-ped.x,spot.y-ped.y)>1)
+        ped.crossing={fx:ped.x,fy:ped.y,tx:spot.x,ty:spot.y,k:0,join:true};
 }

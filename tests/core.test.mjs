@@ -111,6 +111,14 @@ function pressKey(g, key) {
     step(g);
 }
 
+function useCarDoor(g) {
+    pressKey(g,'KeyE');
+    const tr=g.player.transition;
+    assert.ok(tr,'E should start the door interaction');
+    step(g,tr.kind==='enter'?48:36);
+    assert.equal(g.player.transition,null);
+}
+
 // Strip the world down to the player so one mechanic can be measured alone.
 function clearActors(g) {
     g.cars = [];
@@ -144,16 +152,19 @@ test('deterministic, connected city; all important positions are accessible', ()
 test('walking, sprinting and solid buildings', () => {
     const a = makeGame();
     clearActors(a);
-    const x = a.player.x;
-    holdKey(a, 'KeyA', 30);
-    assert.ok(a.player.x < x - 45);
-    assert.ok(a.player.x > x - 58);
+    Object.assign(a.player,{x:2778,y:1650,h:-Math.PI/2});
+    a.input.keys.add('ControlLeft');
+    holdKey(a,'KeyW',90);
+    assert.ok(Math.abs(a.player.speed-34)<.1);
+    assert.ok(a.player.y<1620 && a.player.y>1599);
     const b = makeGame();
     clearActors(b);
+    Object.assign(b.player,{x:2778,y:1650,h:-Math.PI/2});
     b.input.keys.add('ShiftLeft');
-    holdKey(b, 'KeyA', 30);
-    assert.ok(b.player.x < a.player.x - 25);
-    assert.ok(b.player.stamina < 1);
+    holdKey(b,'KeyW',90);
+    assert.ok(Math.abs(b.player.speed-172)<.3);
+    assert.ok(b.player.y<a.player.y-150);
+    assert.ok(b.player.stamina<1);
     const block = a.world.buildings[0];
     a.player.x = block.x - 9;
     a.player.y = block.y + 30;
@@ -164,7 +175,7 @@ test('walking, sprinting and solid buildings', () => {
 
 test('first car is reachable, drives, brakes, reverses, steers, exits safely', () => {
     const g = makeGame();
-    pressKey(g, 'KeyE');
+    useCarDoor(g);
     assert.equal(g.player.car?.type, 'sports');
     assert.equal(g.stats.stolen, 1);
     const c = g.player.car;
@@ -189,7 +200,7 @@ test('first car is reachable, drives, brakes, reverses, steers, exits safely', (
     assert.ok(c.speed >= -95);
     c.speed = c.vx = c.vy = 0;
     g.player.carCooldown = 0;
-    pressKey(g, 'KeyE');
+    useCarDoor(g);
     assert.equal(g.player.car, null);
     assert.ok(Math.hypot(g.player.x - c.x, g.player.y - c.y) > 20);
     assert.equal(isSolid(g.world, g.player.x, g.player.y, 7), false);
@@ -235,7 +246,7 @@ test('traffic cars can be stolen; moving drivers flee', () => {
     const c = makeCar('taxi', g.player.x + 25, g.player.y, 0, P.taxi, 'traffic');
     c.speed = 30;
     g.cars = [c];
-    pressKey(g, 'KeyE');
+    useCarDoor(g);
     assert.equal(g.player.car, c);
     assert.equal(c.driver, false);
     assert.equal(g.peds.length, 1);
@@ -247,14 +258,14 @@ test('theft only creates wanted heat when witnessed; cruiser unlock at two stars
     clearActors(g);
     const c = makeCar('sedan', g.player.x + 25, g.player.y, 0, P.teal);
     g.cars = [c];
-    pressKey(g, 'KeyE');
+    useCarDoor(g);
     assert.equal(g.police.stars, 0);
     const h = makeGame();
     clearActors(h);
     const s = makeCar('sedan', h.player.x + 24, h.player.y, 0, P.teal);
     const cop = makeCar('police', h.player.x + 90, h.player.y, Math.PI, P.pearl, 'patrol');
     h.cars = [s, cop];
-    pressKey(h, 'KeyE');
+    useCarDoor(h);
     assert.ok(h.police.stars >= 1);
     const j = makeGame();
     clearActors(j);
@@ -264,6 +275,7 @@ test('theft only creates wanted heat when witnessed; cruiser unlock at two stars
     assert.equal(j.player.car, null);
     setWanted(j, 2);
     interact(j);
+    step(j,48);
     assert.equal(j.player.car, cruiser);
 });
 
@@ -336,7 +348,11 @@ test('combat uses ammo; shots hit rivals, punch works, drops can be collected', 
         { id: 500, x: 2460, y: 1429, h: Math.PI, hp: 50, maxHp: 50, dead: false, role: 'rival', home: { x: 2460, y: 1429 }, cooldown: 100, aggro: 0, flash: 0 }
     ];
     g.police.spawnTimer = 10000;
-    holdKey(g, 'Space', 55);
+    pressKey(g,'MouseLeft');
+    step(g,19);
+    assert.equal(g.stats.shots,1);
+    pressKey(g,'MouseLeft');
+    step(g,35);
     assert.ok(g.player.ammo < 36);
     assert.equal(g.enemies[0].dead, true);
     assert.ok(g.world.pickups.some(p => p.kind === 'cash'));
@@ -445,7 +461,7 @@ test('mission hook receives real core events and updates marker/objective', () =
             this.objective = 'Keep rolling.';
         }
     });
-    pressKey(g, 'KeyE');
+    useCarDoor(g);
     assert.ok(events.includes('enterCar'));
     assert.ok(events.includes('tick'));
     assert.equal(g.mission.objective, 'Keep rolling.');
@@ -456,7 +472,7 @@ test('render paths execute for on foot, driving, police, map, dusk and defeat', 
     const g = makeGame();
     const r = new Renderer(canvas, g.world);
     r.render(g);
-    pressKey(g, 'KeyE');
+    useCarDoor(g);
     r.render(g);
     setWanted(g, 5);
     step(g, 120);
@@ -492,7 +508,7 @@ test('title, start, pause, map, mute, defeat, recovery and Continue use the real
     const g = window.__neon.game;
     assert.equal(g.mapOpen, true);
     const r = g.mapRect;
-    canvas.fire('pointerdown', { button: 0, clientX: r.x + r.w / 2, clientY: r.y + r.h / 2 });
+    canvas.fire('mousedown', { button: 0, clientX: r.x + r.w / 2, clientY: r.y + r.h / 2 });
     assert.equal(g.mapOpen, false);
     assert.ok(Number.isFinite(g.waypoint.x));
     g.player.cash = 500;
@@ -585,7 +601,8 @@ test('two minutes of city simulation remain finite, bounded and deterministic', 
         }
         assert.ok(g.peds.length <= 130);
         assert.ok(g.particles.length <= 500);
-        return g.cars.map(c => [c.x, c.y, c.h, c.hp]);
+        return {cars:g.cars, peds:g.peds, enemies:g.enemies, player:g.player,
+            police:g.police, stats:g.stats, pickups:g.world.pickups, clock:g.clock};
     }
     assert.deepEqual(run(), run());
 });
@@ -598,7 +615,7 @@ test('story progression, briefings, timer failure, retry and saved rewards', () 
     step(g, 120);
     assert.equal(g.mission.active.remaining, 90, 'briefing freezes the deadline');
     advanceDialogue(g);
-    pressKey(g, 'KeyE');
+    useCarDoor(g);
     assert.equal(g.player.car, g.mission.active.target);
     holdKey(g, 'KeyW', 20);
     assert.ok(g.stats.distance > 0);
@@ -608,7 +625,7 @@ test('story progression, briefings, timer failure, retry and saved rewards', () 
     assert.equal(g.player.cash, cash);
     assert.ok(startMission(g, 'm1'));
     advanceDialogue(g);
-    pressKey(g, 'KeyE');
+    useCarDoor(g);
     Object.assign(g.player.car, JOB_POINTS.hotel, { speed: 0, vx: 0, vy: 0 });
     step(g);
     assert.equal(g.mission.active.phase, 'outro');
@@ -684,7 +701,7 @@ test('Diner Defense uses real combat and the van finale enforces all three stage
     assert.equal(van.type, 'armored');
     assert.equal(isSolid(g.world, van.x, van.y, 20), false);
     Object.assign(g.player, { x: van.x + 25, y: van.y });
-    pressKey(g, 'KeyE');
+    useCarDoor(g);
     assert.equal(g.player.car, van);
     assert.equal(g.police.stars, 3);
     assert.equal(g.mission.active.stage, 'chase');
@@ -823,7 +840,7 @@ test('a cab timeout, abandoned cab or story job releases the passenger without p
         assert.ok(fare);
         const cash = g.player.cash;
         if (reason === 'timeout') fare.remaining = 0;
-        if (reason === 'exit') pressKey(g, 'KeyE');
+        if (reason === 'exit') useCarDoor(g);
         if (reason === 'job') startMission(g, 'm1');
         step(g);
         assert.equal(g.fare, null);
@@ -913,4 +930,160 @@ test('Rosa’s after-hours visit follows the fifth job and survives Continue', (
     step(restored);
     assert.equal(restored.mission.marker, null);
     assert.equal(restored.rosaVisit, true);
+});
+
+test('distance-driven gait covers one stride per cycle at each gear for ten seconds', async () => {
+    const {makeGait, updateGait} = await import('../game/src/locomotion.js');
+    for (const speed of [34, 64, 107, 172]) {
+        const gait = makeGait();
+        const cadence = (62 * Math.sqrt(speed / 16) + 24) / 60;
+        const stride = 2 * speed / cadence;
+        for (let i = 0; i < 600; i++) updateGait(gait, {speed, distance:speed/60}, 1/60);
+        const cycles = gait.phase / (2 * Math.PI);
+        assert.ok(Math.abs((10 * speed / cycles) / stride - 1) < .05);
+        assert.ok(Math.abs(gait.phase / 10 / (Math.PI * cadence) - 1) < .05);
+        if (speed === 34) assert.ok(Math.abs(9 / (Math.PI * cadence) - 1) > .5);
+        const phase = gait.phase;
+        updateGait(gait, {speed, distance:0}, 1/60);
+        assert.equal(gait.phase, phase, 'pushing against a wall cannot advance a stride');
+    }
+});
+
+test('jump preserves horizontal momentum, freezes phase, and lands after 39 ticks', () => {
+    const g=makeGame();clearActors(g);
+    const p=g.player;
+    Object.assign(p,{x:2778,y:1800,h:-Math.PI/2});
+    holdKey(g,'KeyW',100);
+    const phase=p.gait.phase, ammo=p.ammo, speed=p.speed;
+    pressKey(g,'Space');
+    assert.ok(p.z>0);
+    g.input.pressed.add('MouseLeft');
+    g.input.keys.add('KeyS');
+    step(g,18);
+    assert.ok(Math.abs(p.z-20)<.1);
+    assert.ok(Math.abs(p.speed-speed*.9)<.01);
+    assert.equal(p.gait.phase,phase);
+    assert.equal(p.ammo,ammo);
+    step(g,20);
+    assert.equal(p.z,0);assert.equal(p.vz,0);
+    assert.ok(p.landing>0);
+    assert.ok(g.particles.some(effect=>effect.kind==='dust'));
+});
+
+test('door timing commits theft once and a wreck during entry cancels it', () => {
+    const g=makeGame();const c=g.cars.find(c=>c.type==='sports'&&Math.hypot(c.x-g.player.x,c.y-g.player.y)<52);
+    pressKey(g,'KeyE');step(g,28);
+    assert.equal(g.player.car,null);assert.equal(g.stats.stolen,0);
+    assert.equal(g.player.transition.car,c);
+    damageCar(g,c,200);step(g);
+    assert.equal(g.player.transition,null);assert.equal(g.stats.stolen,0);
+    const h=makeGame();
+    pressKey(h,'KeyE');step(h,47);
+    assert.equal(h.player.car,null);
+    step(h);assert.equal(h.player.car?.type,'sports');
+    assert.equal(h.stats.stolen,1);
+    step(h,37);pressKey(h,'KeyE');step(h,35);
+    assert.equal(h.player.transition.kind,'exit');step(h);
+    assert.equal(h.player.transition,null);assert.equal(h.player.car,null);
+});
+
+test('right button holds aim, movement strafes, and a fast left click survives mouseup', () => {
+    const g=makeGame();clearActors(g);
+    Object.assign(g.player,{x:2778,y:1800,h:0});
+    g.screenToWorld=()=>({x:g.player.x+100,y:g.player.y});
+    canvas.fire('pointermove',{clientX:200,clientY:150});step(g);assert.equal(g.player.armed,false);
+    canvas.fire('mousedown',{button:2,clientX:200,clientY:150});
+    g.input.keys.add('ShiftLeft');holdKey(g,'KeyA',120);
+    assert.ok(Math.abs(g.player.speed-64*.55*.8)<.01);
+    assert.equal(g.player.stamina,1);assert.equal(g.player.h,0);
+    canvas.fire('mousedown',{button:0,clientX:200,clientY:150});
+    window.fire('mouseup',{button:0});step(g);
+    assert.equal(g.stats.shots,1);assert.ok(g.player.recoil>0);assert.ok(g.player.armed);
+    window.fire('mouseup',{button:2});step(g);assert.equal(g.player.armed,false);
+});
+
+test('close-range click alternates fists and freezes translation during hit-stop', () => {
+    const g=makeGame();clearActors(g);
+    const p=g.player;Object.assign(p,{x:2778,y:1800,h:0});
+    g.enemies=[{id:501,x:2800,y:1800,h:0,hp:75,role:'rival',cooldown:100,home:{x:2800,y:1800}}];
+    g.input.pressed.add('MouseLeft');step(g);
+    assert.equal(g.enemies[0].hp,50);assert.equal(p.hitStop,.06);assert.equal(p.punchLeft,true);
+    const x=p.x;holdKey(g,'KeyD',3);assert.equal(p.x,x);assert.equal(p.ammo,36);
+    step(g,25);g.input.pressed.add('MouseLeft');step(g);
+    assert.equal(p.punchLeft,false);assert.equal(g.enemies[0].hp,25);
+});
+
+test('stamina exhaustion holds the jog cap until thirty percent recovery', () => {
+    const g=makeGame();clearActors(g);
+    const p=g.player;Object.assign(p,{x:2778,y:2550,h:-Math.PI/2});
+    g.input.keys.add('ShiftLeft');holdKey(g,'KeyW',753);
+    assert.ok(p.exhausted);assert.ok(p.stamina<.02);
+    holdKey(g,'KeyW',100);
+    assert.ok(p.exhausted);assert.ok(p.speed<65);assert.ok(p.stamina<.30);
+    holdKey(g,'KeyW',90);
+    assert.equal(p.exhausted,false);assert.ok(p.speed>160);
+});
+
+test('the articulated player and crowd rigs pose independent joints and share outfit geometry', async () => {
+    const {buildPersonRig,poseRig}=await import('../game/src/rig.js');
+    const {makeGait,updateGait,solvePose}=await import('../game/src/locomotion.js');
+    const opts={player:true},model=buildPersonRig(opts),other=buildPersonRig(opts);
+    assert.equal(model.userData.mesh.geometry,other.userData.mesh.geometry);
+    assert.notEqual(model.userData.bones.kneeL,other.userData.bones.kneeL);
+    const gait=makeGait();
+    for(let i=0;i<120;i++)updateGait(gait,{speed:172,distance:172/60,turn:.6},1/60);
+    gait.phase=Math.PI*1.5;
+    const pose=solvePose(gait);poseRig(model,pose);
+    const b=model.userData.bones;
+    assert.ok(Math.abs(b.kneeL.rotation.z-b.kneeR.rotation.z)>1.4);
+    assert.ok(b.torso.rotation.z<-.2);
+    assert.ok(b.head.rotation.y<0);
+    assert.equal(b.kneeL.parent,b.thighL);
+    assert.equal(b.ankleR.parent,b.kneeR);
+    assert.ok(model.userData.mesh.geometry.attributes.position.array.every(Number.isFinite));
+    assert.equal(other.userData.bones.kneeL.rotation.z,0);
+    const crowd=buildPersonRig({officer:true}),seed=makeGait(3001);
+    poseRig(crowd,solvePose(seed,{armed:true}),true);
+    assert.equal(crowd.userData.gun.visible,true);
+    assert.equal(crowd.userData.mesh.geometry,crowd.userData.lod);
+    assert.notEqual(makeGait(3002).phase,seed.phase);
+});
+
+test('standing player, civilians and officers share adult proportions at both detail levels', async () => {
+    const {buildPersonRig, poseRig} = await import('../game/src/rig.js');
+    const {makeGait, solvePose} = await import('../game/src/locomotion.js');
+    const {Vector3} = await import('../game/vendor/three.module.min.js');
+    for (const options of [{player:true}, {style:1}, {style:2}, {officer:true}]) {
+        const rig = buildPersonRig(options);
+        const {bones, mesh} = rig.userData;
+        const headIndex = mesh.skeleton.bones.indexOf(bones.head);
+        for (const distant of [false, true]) {
+            poseRig(rig, solvePose(makeGait()), distant);
+            rig.updateMatrixWorld(true);
+            let floor = Infinity, crown = -Infinity, chin = Infinity;
+            const vertex = new Vector3();
+            const {position, skinIndex} = mesh.geometry.attributes;
+            for (let i = 0; i < position.count; i++) {
+                mesh.getVertexPosition(i, vertex);
+                floor = Math.min(floor, vertex.y);
+                crown = Math.max(crown, vertex.y);
+                if (skinIndex.getX(i) === headIndex) chin = Math.min(chin, vertex.y);
+            }
+            const height = crown - floor;
+            const head = (crown - chin) / height;
+            const leg = (bones.thighL.matrixWorld.elements[13] - bones.ankleL.matrixWorld.elements[13]) / height;
+            assert.ok(Math.abs(floor) < .11 && Math.abs(height - 28) < .5, `floor ${floor}, height ${height}`);
+            assert.ok(head >= 1/8.5 && head <= 1/6.5, `head/height ${head}`);
+            assert.ok(leg >= .45 && leg <= .55, `leg/height ${leg}`);
+
+            // At full knee flexion the foot beside the car must still touch the road.
+            poseRig(rig, solvePose(makeGait(), {transition:{kind:'exit', time:.05}}), distant);
+            rig.updateMatrixWorld(true);
+            let crouchingFloor = Infinity;
+            for (let i = 0; i < position.count; i++) {
+                crouchingFloor = Math.min(crouchingFloor, mesh.getVertexPosition(i, vertex).y);
+            }
+            assert.ok(Math.abs(crouchingFloor) < .11, `door crouch floor ${crouchingFloor}`);
+        }
+    }
 });

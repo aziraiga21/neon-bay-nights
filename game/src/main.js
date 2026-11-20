@@ -236,7 +236,7 @@ function openJobs() {
     paintMenu('missions');
 }
 
-const controls = `<div class="controls"><div><kbd>WASD</kbd> / <kbd>↑↓←→</kbd> Move / drive</div><div><kbd>E</kbd> Enter, exit, steal / use shop</div><div><kbd>SHIFT</kbd> Sprint / handbrake · <kbd>R</kbd> Repair</div><div><kbd>SPACE</kbd> Fire · Mouse to aim & fire</div><div><kbd>T</kbd> Taxi dispatch · <kbd>G</kbd> Garage on foot</div><div><kbd>F</kbd> Punch · <kbd>TAB</kbd> City map</div><div><kbd>ESC</kbd> / <kbd>P</kbd> Pause · <kbd>M</kbd> Mute</div></div>`;
+const controls = `<div class="controls"><div><kbd>WASD</kbd> / <kbd>↑↓←→</kbd> Move / drive</div><div><kbd>E</kbd> Enter, exit, steal / use shop</div><div><kbd>SHIFT</kbd> Sprint / handbrake · <kbd>R</kbd> Repair</div><div><kbd>SPACE</kbd> Jump · <kbd>CTRL</kbd> Walk</div><div><kbd>RMB</kbd> Aim · <kbd>LMB</kbd> Shoot / punch</div><div><kbd>T</kbd> Taxi dispatch · <kbd>G</kbd> Garage on foot</div><div><kbd>F</kbd> Punch · <kbd>TAB</kbd> City map</div><div><kbd>ESC</kbd> / <kbd>P</kbd> Pause · <kbd>M</kbd> Mute</div></div>`;
 
 function titleMarkup() {
     const saved = readSave();
@@ -384,11 +384,12 @@ screen.addEventListener('click', e => {
     }
 });
 
-canvas.addEventListener('pointerdown', e => {
-    if (!game.mapOpen || !game.mapRect) return;
+canvas.addEventListener('mousedown', e => {
+    if (e.button !== 0 || !game.mapOpen || !game.mapRect) return;
     const r = game.mapRect;
-    const x = e.clientX;
-    const y = e.clientY;
+    const bounds = canvas.getBoundingClientRect();
+    const x = e.clientX - bounds.left;
+    const y = e.clientY - bounds.top;
     if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
         game.waypoint = { x: (x - r.x) / r.scale, y: (y - r.y) / r.scale, label: 'YOUR WAYPOINT' };
         game.mapOpen = false;
@@ -489,7 +490,7 @@ function handleGlobalKeys() {
     }
     if (input.tap('Tab') && game.mode === 'play') {
         game.mapOpen = !game.mapOpen;
-        input.mouse.down = false;
+        input.clear();
     }
 }
 

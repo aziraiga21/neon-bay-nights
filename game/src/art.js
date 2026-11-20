@@ -1,16 +1,9 @@
-// Neon Bay Nights — procedural art, third-person 3D edition.
-//
-// Two jobs live here. First, the 3D mesh builders the renderer draws
-// every frame: the merged static city (ground, roads, buildings, palms,
-// lamps, props), one merged geometry per car type and per person outfit,
-// pickups, and mission beacons. Everything is built from boxes,
-// cylinders, cones and spheres with vertex colours from the exact
-// palette, so a whole district costs a handful of draw calls.
-//
-// Second, the small 2D canvas helpers the HUD still draws with
-// (rounded panels, text, dots, stars). The HUD is a 2D overlay canvas;
-// the world is 3D.
+// Procedural coastal architecture, street surfaces and vehicles. Static parts
+// bake into district meshes. Car paint, glass, trim and lamps have separate
+// surfaces up close; more distant traffic shares baked silhouettes.
+// The canvas helpers below also paint the HUD.
 import * as THREE from './../vendor/three.module.min.js';
+import { RoundedBoxGeometry } from '../vendor/RoundedBoxGeometry.js';
 import { createRandom } from './random.js';
 import { PALETTE as P, CARS, WORLD, ROADS_X, ROADS_Y } from './config.js';
 
@@ -80,6 +73,35 @@ function boxPart(w, h, d, x, y, z, color, ry = 0) {
     return { geo, color };
 }
 
+const roundedShapes=new Map();
+function indexedRoundedBox(w,h,d,segments,radius) {
+    const shape=new RoundedBoxGeometry(w,h,d,segments,radius);
+    if(shape.index) return shape;
+    // r160 expands a BoxGeometry grid before rounding each corner in place.
+    // Recover its original index. Each face keeps a separate grid for its UVs.
+    const divisions=2*segments+1;
+    const grid=new THREE.BoxGeometry(1,1,1,divisions,divisions,divisions);
+    for(const [name,a] of Object.entries(shape.attributes)) {
+        const packed=new Float32Array(grid.attributes.position.count*a.itemSize);
+        for(let i=0;i<a.count;i++) {
+            const offset=grid.index.array[i]*a.itemSize;
+            for(let k=0;k<a.itemSize;k++) packed[offset+k]=a.array[i*a.itemSize+k];
+        }
+        shape.setAttribute(name,new THREE.BufferAttribute(packed,a.itemSize));
+    }
+    shape.setIndex(grid.index);
+    return shape;
+}
+
+function roundedPart(w,h,d,x,y,z,color,radius=Math.min(w,h,d)*.14,segments=1,ry=0) {
+    const key=[w,h,d,radius,segments].join('/');
+    if(!roundedShapes.has(key)) roundedShapes.set(key,indexedRoundedBox(w,h,d,segments,radius));
+    const geo=roundedShapes.get(key).clone();
+    if(ry) geo.rotateY(ry);
+    geo.translate(x,y,z);
+    return {geo,color};
+}
+
 function cylPart(rt, rb, h, x, y, z, color, seg = 8) {
     const geo = new THREE.CylinderGeometry(rt, rb, h, seg);
     geo.translate(x, y, z);
@@ -115,51 +137,44 @@ function wallQuad(w, h, x, y, z, color, ry = 0) {
     return { geo, color };
 }
 
+// Retain the primitive indices when batching. UV and normal seams keep their
+// own vertices, while adjoining triangles can reuse transformed vertices.
 function mergeParts(parts) {
-    const geos = [];
-    let total = 0;
-    for (const part of parts) {
-        const geo = part.geo.index ? part.geo.toNonIndexed() : part.geo;
-        geos.push({ geo, color: part.color });
-        total += geo.attributes.position.array.length;
+    let vertexCount=0, indexCount=0;
+    for(const {geo} of parts) {
+        vertexCount+=geo.attributes.position.count;
+        indexCount+=geo.index?.count ?? geo.attributes.position.count;
     }
-    const positions = new Float32Array(total);
-    const normals = new Float32Array(total);
-    const colors = new Float32Array(total);
-    const uvs = new Float32Array((total / 3) * 2);
-    let offset = 0, uvOffset = 0;
-    for (const { geo, color } of geos) {
-        const pos = geo.attributes.position.array;
-        const nor = geo.attributes.normal.array;
-        const uv = geo.attributes.uv?.array;
-        positions.set(pos, offset);
-        normals.set(nor, offset);
-        if (uv) uvs.set(uv, uvOffset);
-        uvOffset += (pos.length / 3) * 2;
-        if (color === null) {
-            colors.set(geo.attributes.color.array,offset);
-            offset += pos.length;
-            continue;
+    const positions=new Float32Array(vertexCount*3), normals=new Float32Array(vertexCount*3);
+    const colors=new Float32Array(vertexCount*3), uvs=new Float32Array(vertexCount*2);
+    const indices=vertexCount>65535?new Uint32Array(indexCount):new Uint16Array(indexCount);
+    let vertex=0, cursor=0;
+    for(const {geo,color} of parts) {
+        const {position,normal,uv}=geo.attributes;
+        positions.set(position.array,vertex*3);
+        normals.set(normal.array,vertex*3);
+        if(uv) uvs.set(uv.array,vertex*2);
+        if(color===null) colors.set(geo.attributes.color.array,vertex*3);
+        else {
+            _color.set(color);
+            for(let i=vertex;i<vertex+position.count;i++) _color.toArray(colors,i*3);
         }
-        _color.set(color);
-        for (let i = offset; i < offset + pos.length; i += 3) {
-            colors[i] = _color.r;
-            colors[i + 1] = _color.g;
-            colors[i + 2] = _color.b;
-        }
-        offset += pos.length;
+        if(geo.index) for(const i of geo.index.array) indices[cursor++]=vertex+i;
+        else for(let i=0;i<position.count;i++) indices[cursor++]=vertex+i;
+        vertex+=position.count;
     }
-    const out = new THREE.BufferGeometry();
-    out.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    out.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
-    out.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    out.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    const out=new THREE.BufferGeometry();
+    out.setIndex(new THREE.BufferAttribute(indices,1));
+    out.setAttribute('position',new THREE.BufferAttribute(positions,3));
+    out.setAttribute('normal',new THREE.BufferAttribute(normals,3));
+    out.setAttribute('color',new THREE.BufferAttribute(colors,3));
+    out.setAttribute('uv',new THREE.BufferAttribute(uvs,2));
     return out;
 }
 
 // A street-level camera sees just a few blocks. Keep distant blocks out
 // of both the colour and shadow passes, including on software renderers.
-function mergeBlocks(parts) {
+function mergeBlocks(parts, lod=false) {
     const blocks=new Map();
     for(const part of parts){
         part.geo.computeBoundingBox();
@@ -168,7 +183,21 @@ function mergeBlocks(parts) {
         if(!blocks.has(key)) blocks.set(key,[]);
         blocks.get(key).push(part);
     }
-    return Array.from(blocks.values(),group=>mergeParts(group));
+    return Array.from(blocks.values(),group=>{
+        const near=mergeParts(group);
+        if(!lod)return near;
+        const far=[];
+        for(const part of group){
+            const bounds=part.geo.boundingBox, sz=bounds.getSize(new THREE.Vector3());
+            if(Math.max(sz.x,sz.y,sz.z)<18)continue;
+            if(part.geo instanceof RoundedBoxGeometry){
+                const mid=bounds.getCenter(new THREE.Vector3());
+                far.push(boxPart(sz.x,sz.y,sz.z,mid.x,mid.y,mid.z,part.color));
+            }else far.push(part);
+        }
+        near.computeBoundingSphere();
+        return {near,far:far.length?mergeParts(far):null,center:near.boundingSphere.center};
+    });
 }
 
 // 2D heading h (0 = east, clockwise) becomes a Three.js yaw of -h, so a
@@ -196,6 +225,11 @@ function paintFacade(ctx, mask, b, width, height, seed) {
     const rect = (x, y, w, h, color) => { ctx.fillStyle = color; ctx.fillRect(x, y, w, h); };
     rect(0,0,256,256,wall);
     const trim = glass ? '#e1d8cc' : wharf ? '#786c70' : '#fae0b6';
+    for(let y=0;y<256;y+=5){
+        rect(0,y,256,.6,'#48333717');
+        for(let x=(y%2)*8;x<256;x+=18) rect(x,y,.6,5,'#49363912');
+    }
+    for(let i=0;i<850;i++) rect(rng()*256,rng()*256,1.4,1,'#533f4021');
     if (wharf) {
         for (let x=0; x<256; x+=5) rect(x,0,1,256,'#51496739');
     }
@@ -245,15 +279,17 @@ function paintFacade(ctx, mask, b, width, height, seed) {
 // recognisable from the roadside and lets the sunset through its crown.
 function frond(length, width, curl, angle, x, y, z, color) {
     const vertices=[];
-    const rib=t=>[length*t,Math.sin(Math.PI*t)*length*.30-curl*t*t,0];
-    const tri=(a,b,c)=>vertices.push(...a,...b,...c,...c,...b,...a);
-    for(let i=0;i<6;i++) {
-        const t=i/6, end=(i+1)/6, a=rib(t), b=rib(end);
-        const broad=width*(.18+.82*Math.sin(Math.PI*(t+.05)));
-        for(const k of [-1,1]) {
-            const edge=[a[0],a[1]-.45,broad*.32*k],next=[b[0],b[1]-.45,broad*.32*k];
-            tri(a,b,edge);tri(edge,b,next);
-            tri(a,b,[b[0]+length*.05,b[1]-broad*.85,broad*k]);
+    const rib=t=>[length*t,Math.sin(Math.PI*t)*length*.25-curl*t*t,Math.sin(t*2.1)*length*.06];
+    const tri=(a,b,c)=>vertices.push(...a,...b,...c);
+    for(let i=0;i<12;i++) {
+        const t=i/12,end=(i+1)/12,a=rib(t),b=rib(end);
+        const spread=width*(.22+.9*Math.sin(Math.PI*(t+.02)));
+        for(const side of [-1,1]){
+            const base=[a[0]+.25,a[1]-.09,a[2]+side*.32];
+            tri(a,b,base);
+            const point=[b[0]+length*.09,b[1]-spread*(.65+t*.3),b[2]+side*spread];
+            const crease=[a[0]+length*.048,a[1]-.09,a[2]+side*spread*.45];
+            tri(base,crease,point);tri(crease,b,point);
         }
     }
     const geo=new THREE.BufferGeometry();
@@ -262,9 +298,9 @@ function frond(length, width, curl, angle, x, y, z, color) {
     return {geo,color};
 }
 
-function strut(a,b,r,color) {
+function strut(a,b,r,color,baseRadius=r) {
     const start=new THREE.Vector3(...a), end=new THREE.Vector3(...b), axis=end.clone().sub(start);
-    const geo=new THREE.CylinderGeometry(r,r,axis.length(),6);
+    const geo=new THREE.CylinderGeometry(r,baseRadius,axis.length(),8);
     geo.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0),axis.normalize()));
     const mid=start.lerp(end,.5);geo.translate(mid.x,mid.y,mid.z);return {geo,color};
 }
@@ -307,53 +343,105 @@ function buildPier(rest,glow) {
     }
 }
 
-// Crowns share geometry at two levels of detail. Grouping instances by
-// block keeps a distant avenue cheap without changing the player's skyline.
+// Share one crown at each projected size. Double-sided fronds shade both
+// faces of a blade without sending its reversed triangles through the GPU.
 export function buildPalms(world, material) {
-    const blocks=new Map(), group=new THREE.Group();
-    const near=[],far=[];
-    for(const [parts,leaves] of [[near,9],[far,6]]) {
-        parts.push(strut([0,0,0],[3,54,0],1.72,'#a18670'),
+    const group=new THREE.Group(), near=[], mid=[], far=[];
+    for(const [parts,leaves] of [[near,7],[mid,6],[far,6]]) {
+        parts.push(strut([0,0,0],[1,26,-.9],1.72,'#927e68',2.45),
+            strut([1,26,-.9],[3,54,0],1.28,'#ac9074',1.72),
             cylPart(2.8,1.7,7,3,52,0,'#748951',7));
-        if(parts===near) for(let k=1;k<7;k++) parts.push(
-            cylPart(1.83,1.94,.8,3*k/7,54*k/7,0,'#886d5d',7));
+        if(parts===near) for(let k=1;k<15;k++){
+            const t=k/15, r=2.42-t*1.08,dx=t<.48?t/.48:1+(t-.48)/.52*2;
+            const z=t<.48?-t/.48*.9:-(1-t)/.52*.9;
+            parts.push(cylPart(r*.99,r+.10,.36,dx,54*t,z,'#8e7d6c',8));
+        }
         for(let i=0;i<leaves;i++) {
-            if(parts===near) parts.push(frond(24+i%3*3.5,3.4,4+i%3*3,i*2.4,3,56,0,
+            if(parts===near) parts.push(frond(24+i%3*3.5,4.7,5+i%3*3,i*2.4,3,56,0,
                 ['#3a816b','#589365','#416c5a'][i%3]));
             else {
-                const geo=new THREE.BufferGeometry(), r=22+i%2*5;
-                const pts=[0,0,0,10,4,-2.6,r,-4,0,0,0,0,r,-4,0,10,4,2.6];
-                const rev=[...pts.slice(6,9),...pts.slice(3,6),...pts.slice(0,3),
-                    ...pts.slice(15,18),...pts.slice(12,15),...pts.slice(9,12)];
-                geo.setAttribute('position',new THREE.Float32BufferAttribute([...pts,...rev],3));
+                const vertices=[],r=23+i%2*5,sections=parts===far?3:5;
+                const edge=(k,side)=>{
+                    const t=k/sections;
+                    return [r*t,Math.sin(t*Math.PI)*5-(3+i%3)*t*t-Math.abs(side)*.6,
+                        side*(.12+2.4*Math.sin(t*Math.PI))];
+                };
+                for(let k=0;k<sections;k++)for(const side of [-1,1]){
+                    const a=edge(k,0),b=edge(k+1,0),c=edge(k+1,side),d=edge(k,side);
+                    vertices.push(...a,...b,...c,...a,...c,...d);
+                }
+                const geo=new THREE.BufferGeometry();
+                geo.setAttribute('position',new THREE.Float32BufferAttribute(vertices,3));
                 geo.computeVertexNormals();geo.rotateY(i*2.4);geo.translate(3,56,0);
-                parts.push({geo,color:i%2?'#579168':'#39745f'});
+                parts.push({geo,color:i%2?'#528b65':'#356955'});
             }
         }
     }
-    const nearGeo=mergeParts(near),farGeo=mergeParts(far), dummy=new THREE.Object3D();
-    for(const tree of world.props.filter(p=>p.kind==='palm')){
-        const key=Math.floor(tree.x/320)+','+Math.floor(tree.y/320);
-        if(!blocks.has(key))blocks.set(key,[]);
-        blocks.get(key).push(tree);
-    }
-    for(const trees of blocks.values()){
-        const x=trees.reduce((sum,t)=>sum+t.x,0)/trees.length;
-        const y=trees.reduce((sum,t)=>sum+t.y,0)/trees.length;
-        const lod=new THREE.LOD(); lod.position.set(x,0,y);
-        for(const [geo,distance] of [[nearGeo,0],[farGeo,550]]){
-            const mesh=new THREE.InstancedMesh(geo,material,trees.length);
-            trees.forEach((p,i)=>{
-                dummy.position.set(p.x-x,0,p.y-y);dummy.rotation.y=p.phase;
-                dummy.scale.set(p.scale,p.scale*(.95+p.phase*.026),p.scale);
-                dummy.updateMatrix();mesh.setMatrixAt(i,dummy.matrix);
-            });
-            mesh.castShadow=true;mesh.computeBoundingSphere();
-            lod.addLevel(mesh,distance);
+    const transform=new THREE.Object3D();
+    const trees=world.props.filter(p=>p.kind==='palm').map(p=>{
+        transform.position.set(p.x,0,p.y);
+        transform.rotation.y=p.phase;
+        transform.scale.set(p.scale,p.scale*(.95+p.phase*.026),p.scale);
+        transform.updateMatrix();
+        const center=new THREE.Vector3(p.x,32*transform.scale.y,p.y);
+        const bounds=new THREE.Sphere(center,46*Math.max(p.scale,transform.scale.y));
+        return {matrix:transform.matrix.clone(),bounds};
+    });
+    const foliage=material.clone();
+    foliage.side=THREE.DoubleSide;
+    const levels=[near,mid,far].map(parts=>{
+        const geometry=mergeParts(parts);
+        // Trees outside the fitted sun map need only their colour pass.
+        return [false,true].map(caster=>{
+            const mesh=new THREE.InstancedMesh(geometry,foliage,trees.length);
+            mesh.count=0;mesh.castShadow=caster;mesh.frustumCulled=false;
+            mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+            group.add(mesh);
+            return mesh;
+        });
+    });
+    group.userData.update=(eye,scale,view,sun)=>{
+        for(const mesh of group.children) mesh.count=0;
+        const nearSq=(340*scale)**2, midSq=(1250*scale)**2;
+        for(const {matrix,bounds} of trees){
+            const caster=sun.intersectsSphere(bounds);
+            if(!caster && !view.intersectsSphere(bounds)) continue;
+            const d=eye.distanceToSquared(bounds.center);
+            const mesh=levels[d<nearSq?0:d<midSq?1:2][Number(caster)];
+            mesh.setMatrixAt(mesh.count++,matrix);
         }
-        group.add(lod);
-    }
+        for(const mesh of group.children){
+            mesh.visible=mesh.count>0;
+            if(mesh.visible) mesh.instanceMatrix.needsUpdate=true;
+        }
+    };
     return group;
+}
+
+// An eave rectangle and a variable ridge define the roof faces. Extending
+// the ridge to the ends gives gables; shortening it produces hips; a single
+// apex gives a pyramid. Rotate the local ridge onto the longer building axis.
+function roofPart(b, height) {
+    const alongZ=b.h>b.w, w=Math.max(b.w,b.h)/2+1.8,d=Math.min(b.w,b.h)/2+1.8;
+    const form=b.kind==='warehouse'?'gable':b.kind==='clinic'?'hip':
+        b.kind==='bank'?'pyramid':b.kind==='shop'?['flat','skillion','hip','gable'][b.detail%4]:'flat';
+    if(form==='flat') return roundedPart(b.w+3,3,b.h+3,b.x+b.w/2,height,b.y+b.h/2,b.roof,1.1);
+    const rise=form==='pyramid'?21:form==='skillion'?9:Math.min(20,d*.28);
+    const ridge=form==='gable'?w:form==='pyramid'?0:Math.max(0,w-d*.83);
+    const a=[-w,0,-d],c=[w,0,-d],e=[w,0,d],f=[-w,0,d];
+    const l=[-ridge,rise,0],r=[ridge,rise,0],vertices=[];
+    const tri=(a,b,c)=>vertices.push(...a,...b,...c);
+    if(form==='skillion'){
+        const topL=[-w,rise,d],topR=[w,rise,d];
+        tri(a,topL,topR);tri(a,topR,c);tri(f,e,topR);tri(f,topR,topL);
+        tri(a,f,topL);tri(c,topR,e);
+    } else {
+        tri(a,l,r);tri(a,r,c);tri(e,r,l);tri(e,l,f);tri(a,f,l);tri(c,r,e);
+    }
+    const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.Float32BufferAttribute(vertices,3));
+    geo.computeVertexNormals();if(alongZ) geo.rotateY(Math.PI/2);
+    geo.translate(b.x+b.w/2,height,b.y+b.h/2);
+    return {geo,color:b.roof};
 }
 
 export function buildCityGeometry(world) {
@@ -367,12 +455,13 @@ export function buildCityGeometry(world) {
     const lamps=document.createElement('canvas');lamps.width=sheet.width/4;lamps.height=sheet.height/4;
     const mask=lamps.getContext('2d');mask.scale(.25,.25);
     function facadeBox(b, w, h, d, x, y, z) {
-        const part=boxPart(w,h,d,x,y,z,'#ffffff');
+        const part=roundedPart(w,h,d,x,y,z,'#ffffff',Math.min(4,h*.08));
         const uv=part.geo.attributes.uv;
         for (let face=0;face<6;face++) {
             const tile=b.id*2+(face<2?1:0);
-            for(let corner=0;corner<4;corner++){
-                const i=face*4+corner;
+            const perSide=uv.count/6;
+            for(let corner=0;corner<perSide;corner++){
+                const i=face*perSide+corner;
                 uv.setXY(i,(tile%columns+(0.004+uv.getX(i)*.992))/columns,
                     1-(Math.floor(tile/columns)+.996-uv.getY(i)*.992)/(sheet.height/size));
             }
@@ -390,55 +479,50 @@ export function buildCityGeometry(world) {
     }
 
     const roads=[];
-    // Roads: asphalt strips and dashed centre lines.
-    for (const x of ROADS_X) {
-        roads.push(flatPart(104, world.height, x, world.height / 2, P.asphalt, 0.15));
-    }
-    for (const y of ROADS_Y) {
-        roads.push(flatPart(2780, 104, 1390, y, P.asphalt, 0.17));
-    }
-    for (const x of ROADS_X) {
-        for (let y = 60; y < world.height; y += 46) {
-            rest.push(flatPart(4, 20, x, y, P.yellow, 0.28));
+    // Road surfaces use an atlas of complete markings. Straight tiles end at
+    // stop bars, leaving the centre of every junction clear for turning traffic.
+    const paving=[];
+    const roadTile=(x,z,w,d,kind,across=false)=>{
+        const part=flatPart(w,d,x,z,'#ffffff',.16);
+        const uv=part.geo.attributes.uv;
+        for(let i=0;i<uv.count;i++){
+            let u=uv.getX(i),v=uv.getY(i);
+            if(across) [u,v]=[v,1-u];
+            uv.setXY(i,(kind+.002+.996*u)/3,.002+.996*v);
         }
-    }
-    for (const y of ROADS_Y) {
-        for (let x = 60; x < 2780; x += 46) {
-            rest.push(flatPart(20, 4, x, y, P.yellow, 0.28));
+        roads.push(part);
+    };
+    for(const x of ROADS_X){
+        let from=0;
+        for(const z of ROADS_Y){
+            roadTile(x,(from+z-52)/2,104,z-52-from,0);
+            roadTile(x,z,104,104,1);
+            from=z+52;
         }
+        roadTile(x,(from+world.height)/2,104,world.height-from,0);
     }
-    // Ocean Drive follows the seawall beyond the easternmost city blocks.
-    roads.push(flatPart(68,world.height,2778,world.height/2,P.asphalt,.19));
-    for(let y=20;y<world.height;y+=44) rest.push(flatPart(2,22,2778,y,P.yellow,.28));
-    for(const x of [2744,2812]) rest.push(flatPart(1.8,world.height,x,world.height/2,P.curb,.29));
-    for (const x of ROADS_X.slice(0,-1)) for(const y of ROADS_Y.slice(0,-1)) {
-        const c=x>=2000?'#d7b9aa':y>=1750?'#b6a9a4':'#ccc3bc';
-        rest.push(flatPart(278,278,x+192,y+192,c,.13));
-        for(let i=60;i<330;i+=32) {
-            rest.push(flatPart(.8,278,x+i,y+192,'#ac9d98',.145));
-            rest.push(flatPart(278,.8,x+192,y+i,'#ac9d98',.145));
+    for(const z of ROADS_Y){
+        let from=0;
+        for(const x of ROADS_X){
+            roadTile((from+x-52)/2,z,x-52-from,104,0,true);
+            from=x+52;
         }
-        for(const edge of [54,330]) {
-            rest.push(flatPart(2.5,276,x+edge,y+192,P.curb,.24));
-            rest.push(flatPart(276,2.5,x+192,y+edge,P.curb,.24));
-        }
+        roadTile((from+2744)/2,z,2744-from,104,0,true);
     }
-    // Wharf crossings use paired lines, the shopping streets use zebra bars.
-    for (const x0 of ROADS_X) {
-        for (const y0 of ROADS_Y) {
-            for (const dx of (y0 >= 2100 ? [-36,-30,30,36] : [-39,-26,-13,0,13,26,39])) {
-                rest.push(flatPart(5, 14, x0 + dx, y0 - 58, P.white, 0.32));
-                rest.push(flatPart(5, 14, x0 + dx, y0 + 58, P.white, 0.32));
-                rest.push(flatPart(14, 5, x0 - 58, y0 + dx, P.white, 0.32));
-                rest.push(flatPart(14, 5, x0 + 58, y0 + dx, P.white, 0.32));
-            }
-        }
+    for(let z=0;z<world.height;z+=240){
+        const length=Math.min(240,world.height-z);
+        roadTile(2778,z+length/2,68,length,2);
     }
-
-    for(const part of roads){
-        const pos=part.geo.attributes.position,uv=part.geo.attributes.uv;
-        for(let i=0;i<pos.count;i++) uv.setXY(i,pos.getX(i)/120,pos.getZ(i)/120);
+    function sidewalk(w,d,x,z) {
+        const part=roundedPart(w,1,d,x,-.26,z,'#ffffff',.45);
+        const pos=part.geo.attributes.position, uv=part.geo.attributes.uv;
+        for(let i=0;i<pos.count;i++) uv.setXY(i,pos.getX(i)/66,pos.getZ(i)/66);
+        paving.push(part);
     }
+    for(const x of ROADS_X.slice(0,-1)) for(const z of ROADS_Y.slice(0,-1))
+        sidewalk(279,279,x+192,z+192);
+    sidewalk(24,world.height,2732,world.height/2);
+    sidewalk(17,world.height,2820.5,world.height/2);
     const ground=rest.splice(0);
     buildPier(rest,glow);
     // The lifting gantries stand on the container pads behind the wharf sheds.
@@ -478,12 +562,21 @@ export function buildCityGeometry(world) {
             const tile=b.id*2+side;
             ctx.save(); ctx.translate((tile%columns)*size,Math.floor(tile/columns)*size);
             mask.save();mask.translate((tile%columns)*size,Math.floor(tile/columns)*size);
+            ctx.scale(size/256,size/256);mask.scale(size/256,size/256);
             paintFacade(ctx,mask,b,side?b.h:b.w,H,world.seed+tile*109);
             mask.restore();
             ctx.restore();
         }
         facadeBox(b,b.w,H,b.h,cx,H/2,cz);
-        rest.push(boxPart(b.w+3,3,b.h+3,cx,H,cz,b.roof));
+        rest.push(roundedPart(b.w+3.6,2.2,b.h+3.6,cx,H-.8,cz,b.roof,.68),roofPart(b,H),roundedPart(b.w+1.5,1.8,b.h+1.5,cx,.9,cz,'#aca49a',.65));
+        if(b.kind==='shop'||b.kind==='diner'){
+            const cornice=b.district==='Glasswater'?'#a9bab8':'#d2b296';
+            for(const side of [-1,1]){
+                rest.push(roundedPart(b.w-.5,1.35,1.5,cx,H-6,cz+side*b.h*.499,cornice,.4));
+                for(const fx of [-.46,.46])
+                    rest.push(roundedPart(2.1,18,2,cx+fx*b.w,9,cz+side*b.h*.5,'#dad0b8',.55));
+            }
+        }
         rest.push(boxPart(b.w*.25,6,b.h*.14,cx-b.w*.22,H+4,cz,'#928d97'));
         for(let i=0;i<4;i++) rest.push(flatPart(2,b.h*.1,cx-b.w*.31+i*4,cz,'#454d5a',H+7.1));
         if(b.kind==='warehouse' || b.kind==='garage'){
@@ -496,8 +589,14 @@ export function buildCityGeometry(world) {
         if(b.kind==='hotel' || b.kind==='bank') {
             const tower=H*(b.kind==='hotel'?1.3:.62);
             facadeBox(b,b.w*.62,tower,b.h*.6,cx-12,H+tower/2,cz-14);
-            rest.push(boxPart(b.w*.65,4,b.h*.63,cx-12,H+tower,cz-14,P.mullion));
+            rest.push(roundedPart(b.w*.65,4,b.h*.63,cx-12,H+tower,cz-14,P.mullion));
+            for(let level=22;level<tower;level+=22)
+                rest.push(roundedPart(b.w*.64,1.5,b.h*.63,cx-12,H+level,cz-14,'#e2d1bb',.65));
             rest.push(boxPart(b.w*.38,9,b.h*.34,cx-12,H+tower+6,cz-14,P.glassDeep));
+            if(b.kind==='bank'){
+                const w=b.w*.43,d=b.h*.37;
+                rest.push(roofPart({kind:'bank',x:cx-12-w/2,y:cz-14-d/2,w,h:d,roof:'#81a6a4'},H+tower+11));
+            }
             if(b.kind==='hotel'){
                 rest.push(boxPart(b.w*.64,2,19,cx,H+2,cz+b.h*.36,P.trim));
                 glow.push(flatPart(b.w*.60,16,cx,cz+b.h*.36,P.pool,H+3.1));
@@ -509,6 +608,14 @@ export function buildCityGeometry(world) {
                 rest.push(boxPart(b.w*.89,2.4,10,cx,19,z,fabric));
                 for(let i=0;i<9;i+=2) rest.push(boxPart(b.w*.09,2.9,10.2,cx+(i-4)*b.w*.098,19,z,P.trim));
             }
+            if(b.detail%4===0 && b.kind==='shop'){
+                for(const side of [-1,1]) for(const u of [-.25,.25]){
+                    const x=cx+u*b.w,z=cz+side*(b.h/2+2.2);
+                    rest.push(roundedPart(b.w*.27,1.1,5,x,H*.54,z,'#e0c7ad',.45),
+                        boxPart(b.w*.27,.45,.45,x,H*.54+3.3,z+side*2,'#5c7477'));
+                    for(const v of [-.123,0,.123])rest.push(boxPart(.38,3.1,.38,x+v*b.w,H*.54+1.75,z+side*2,'#5c7477'));
+                }
+            }
             glow.push(boxPart(b.w+2,1.15,b.h+2,cx,H-3,cz,b.detail%2?'#ff96ad':'#86f8df'));
         }
     }
@@ -519,14 +626,21 @@ export function buildCityGeometry(world) {
         const { kind, x, y } = prop;
         if (kind === 'lamp') {
             rest.push(cylPart(1.1, 1.4, 30, x, 15, y, '#2C3138', 5));
-            rest.push(boxPart(10,2,3,x+4,30,y,P.night));
-            glow.push(boxPart(6,1.2,3,x+6,28.8,y,++lampIndex%3?P.lamp:P.glint));
+            rest.push(strut([x,27,y],[x+3,31,y],.65,'#465155'),
+                strut([x+3,31,y],[x+7,31,y],.58,'#526060'),
+                roundedPart(6.3,1.5,3.3,x+6,30.2,y,'#465154',.65));
+            glow.push(roundedPart(5.1,.6,2.65,x+6,29.36,y,++lampIndex%3?P.lamp:P.glint));
         } else if (kind === 'bench') {
             const h = prop.h || 0;
-            rest.push(boxPart(22, 3, 8, x, 6, y, '#6E3B32', -h));
-            rest.push(boxPart(22, 9, 2,
-                x + Math.sin(h) * 3.5, 10, y + Math.cos(h) * 3.5, '#6E3B32', -h));
-            for(const dx of [-8,8]) rest.push(boxPart(2,5,5,x+dx,2.5,y,P.night));
+            const bench=(xx,yy,zz,w,thick,d,color)=>{
+                rest.push(roundedPart(w,thick,d,x+xx*Math.cos(h)-zz*Math.sin(h),yy,
+                    y+xx*Math.sin(h)+zz*Math.cos(h),color,Math.min(thick,d)*.18,1,-h));
+            };
+            for(const z of [-2.5,0,2.5])bench(0,5.7,z,22,.95,2.1,'#956a50');
+            for(const yy of [8.7,11])bench(0,yy,3.65,22,1.85,.95,'#a57756');
+            for(const xx of [-8.5,8.5]){
+                bench(xx,3.05,0,1.15,5.5,3,'#39484b');bench(xx,8.1,3.3,.9,7,.8,'#405055');
+            }
         } else if(kind==='hydrant') {
             rest.push(cylPart(2.3,3,7,x,3.5,y,'#dd5342'),spherePart(2.8,x,7,y,'#eb7052',1,.7,1,6),
                 boxPart(8,2.8,2.8,x,4.3,y,'#d94842'));
@@ -537,7 +651,19 @@ export function buildCityGeometry(world) {
             rest.push(cylPart(1, 1, 22, x, 11, y, '#F4EFE6', 5));
             rest.push(conePart(17, 9, x, 26, y, prop.color || P.carCoral, 8));
         } else if (kind === 'container') {
-            rest.push(boxPart(86, 26, 32, x, 13, y, prop.color || P.teal));
+            rest.push(roundedPart(86,26,32,x,13,y,prop.color||P.teal,.9));
+            for(const side of [-1,1]) for(let k=-38;k<42;k+=5)
+                rest.push(boxPart(1.3,23,1,x+k,13,y+side*16,prop.color||P.teal));
+        } else if(kind==='bin'){
+            rest.push(roundedPart(5.4,8,5.4,x,4,y,'#476365',.65),
+                roundedPart(6.1,1.4,6.1,x,8.4,y,'#263e43',.5),
+                boxPart(3,.18,1.3,x,9.14,y,'#19292d'));
+        } else if(kind==='cone'){
+            rest.push(roundedPart(5.8,.9,5.8,x,.5,y,'#36343b'),
+                cylPart(.35,2.25,6.3,x,4,y,'#e27443'),cylPart(.92,1.45,1.5,x,4.5,y,'#f4dac1'));
+        } else if(kind==='manhole'){
+            rest.push(cylPart(5.5,5.5,.16,x,.29,y,'#56545b',16));
+            for(let k=-2;k<=2;k++) rest.push(flatPart(6,.22,x,y+k,'#3c3a41',.39));
         } else if (kind === 'tables') {
             rest.push(cylPart(11, 11, 2, x, 9, y, '#F4EFE6', 8));
             rest.push(cylPart(1.5, 1.5, 9, x, 4.5, y, '#2C3138', 5));
@@ -545,189 +671,287 @@ export function buildCityGeometry(world) {
     }
 
     const atlas = new THREE.CanvasTexture(sheet);
-    atlas.colorSpace=THREE.SRGBColorSpace;
+    atlas.colorSpace=THREE.SRGBColorSpace;atlas.anisotropy=4;
     const windows=new THREE.CanvasTexture(lamps);windows.colorSpace=THREE.SRGBColorSpace;
-    return { walls: mergeBlocks(walls), rest: mergeBlocks(rest), ground:mergeParts(ground), road:mergeParts(roads), glow: mergeParts(glow), atlas, windows };
+    return { walls: mergeBlocks(walls), rest: mergeBlocks(rest,true), ground:mergeParts(ground), road:mergeParts(roads), paving:mergeParts(paving), glow: mergeBlocks(glow,true), atlas, windows };
 
 }
 
 // Rooftop blades and double-sided marquees carry the hand-painted shop names.
 export function buildSigns(world) {
-    const signs=[];
-    for(const b of world.buildings) {
-        const named=['diner','garage','clinic','bank','hotel'].includes(b.kind)
-            || ['COPPER / 09','BAY FREIGHT','MARLIN STORAGE','SURF CLUB','TIDE BAR','SUNSET MOTEL','BAJA MARKET','RECORDS'].includes(b.label);
-        if(!named) continue;
-        const c=document.createElement('canvas');
-        c.width=640; c.height=152;
-        const ctx=c.getContext('2d'), neon=b.detail%2?'#ff96bc':'#88ffed';
-        ctx.fillStyle='#232b45'; ctx.fillRect(0,0,c.width,c.height);
-        ctx.strokeStyle=neon; ctx.lineWidth=3; ctx.strokeRect(8,8,624,136);
-        ctx.textAlign='center'; ctx.fillStyle='#fbd6ac';
-        ctx.font='bold 20px monospace';
-        ctx.fillText(b.district.toUpperCase().split('').join(' '),320,37);
-        ctx.shadowBlur=8; ctx.shadowColor=neon; ctx.fillStyle=neon;
-        ctx.font='italic bold 68px sans-serif'; ctx.fillText(b.label,320,110,576);
-        const tex=new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace;
-        const mat=new THREE.MeshBasicMaterial({map:tex});
-        const H=buildingHeight(b), w=Math.min(b.w*.80,104), h=w*152/640;
-        const faces=[
-            [b.x+b.w+.6,b.y+b.h/2,Math.PI/2],[b.x-.6,b.y+b.h/2,-Math.PI/2],
-            [b.x+b.w/2,b.y+b.h+.6,0],[b.x+b.w/2,b.y-.6,Math.PI]
-        ];
-        const geo=new THREE.PlaneGeometry(w,h);
-        for(const [x,z,ry] of faces) {
-            const mesh=new THREE.Mesh(geo,mat);
-            mesh.position.set(x, Math.min(H-h*.54,22+h/2),z);
-            mesh.rotation.y=ry; signs.push(mesh);
+    const buildings=world.buildings.filter(b=>['diner','garage','clinic','bank','hotel'].includes(b.kind)
+        || ['COPPER / 09','BAY FREIGHT','MARLIN STORAGE','SURF CLUB','TIDE BAR','SUNSET MOTEL','BAJA MARKET','RECORDS'].includes(b.label));
+    const labels=[...new Set(buildings.map(b=>b.label))],w=512,h=128,cols=4,rows=Math.ceil(labels.length/cols);
+    const sheet=document.createElement('canvas');sheet.width=w*cols;sheet.height=h*rows;
+    const ctx=sheet.getContext('2d'),parts=[];
+    for(const [i,name] of labels.entries()){
+        const b=buildings.find(b=>b.label===name),wharf=b.kind==='warehouse'||b.kind==='garage';
+        const bg=wharf?'#39494a':b.kind==='diner'?'#5a253e':b.detail%2?'#1e383d':'#3b2d42';
+        const neon=wharf?'#f5d3a5':b.detail%2?'#a5eee0':'#ff9faf';
+        ctx.save();ctx.translate(i%cols*w,Math.floor(i/cols)*h);
+        ctx.fillStyle=bg;ctx.fillRect(0,0,w,h);
+        ctx.strokeStyle=neon;ctx.lineWidth=2;ctx.strokeRect(6,6,w-12,h-12);
+        ctx.fillStyle=neon;
+        if(wharf){
+            for(let k=0;k<3;k++)ctx.fillRect(20,34+k*11,36-k*7,4);
+            ctx.font='bold 15px monospace';ctx.fillText('PORT AUTHORITY  /  MARLIN',67,35);
+            ctx.font='bold 56px sans-serif';ctx.fillText(name,64,94,424);
+            for(const x of [15,w-15])for(const y of [15,h-15]){ctx.beginPath();ctx.arc(x,y,2,0,Math.PI*2);ctx.fill();}
+        }else{
+            ctx.textAlign='center';ctx.font='bold 14px monospace';ctx.fillText(b.district.toUpperCase().split('').join(' '),w/2,30);
+            ctx.shadowBlur=5;ctx.shadowColor=neon;
+            ctx.font=(b.kind==='bank'?'bold 54px serif':'italic bold 59px sans-serif');
+            ctx.fillText(name,w/2,93,w-42);
+        }
+        ctx.restore();
+    }
+    for(const b of buildings){
+        const H=buildingHeight(b),bw=Math.min(b.w*.79,102),bh=bw*h/w;
+        const i=labels.indexOf(b.label),offset=.7;
+        const faces=[[b.x+b.w+offset,b.y+b.h/2,Math.PI/2],[b.x-offset,b.y+b.h/2,-Math.PI/2],
+            [b.x+b.w/2,b.y+b.h+offset,0],[b.x+b.w/2,b.y-offset,Math.PI]];
+        for(const [x,z,a] of faces){
+            const p=wallQuad(bw,bh,x,Math.min(H-bh*.54,21+bh/2),z,'#ffffff',a);
+            const uv=p.geo.attributes.uv;
+            for(let k=0;k<uv.count;k++)uv.setXY(k,(i%cols+.004+uv.getX(k)*.992)/cols,
+                1-(Math.floor(i/cols)+.996-uv.getY(k)*.992)/rows);
+            parts.push(p);
         }
     }
-    return signs;
+    const tex=new THREE.CanvasTexture(sheet);tex.colorSpace=THREE.SRGBColorSpace;tex.anisotropy=4;
+    return [new THREE.Mesh(mergeParts(parts),new THREE.MeshBasicMaterial({map:tex,toneMapped:false}))];
 }
 
-// Tapered sections describe the sill, wheel shoulders and folded bonnet.
-// The same sections carry their own glass reflection or painted body colour.
-function coachwork(sections, side, top, front=side) {
-    const positions=[], colors=[];
-    function quad(a,b,c,d,color,glass=false) {
-        _color.set(color);
-        for(const v of [a,b,c,a,c,d]){
-            if(glass) _color.set(v[1]>sections[0][1]+1?'#efafb1':'#426981');
-            positions.push(...v); colors.push(_color.r,_color.g,_color.b);
-        }
+// A coachbuilt shell runs from the tail to the nose. Each transverse ring
+// has a sill, curved shoulder and crown. The lower edge follows the tyres.
+function loft(rings) {
+    const vertices=rings.flat(2), indices=[], count=rings[0].length;
+    for(let i=0;i<rings.length-1;i++) for(let k=0;k<count;k++) {
+        const a=i*count+k,b=i*count+(k+1)%count;
+        indices.push(a,a+count,b+count,a,b+count,b);
     }
-    const rings=sections.map(([x,y,w,bottom,baseW])=>
-        [[x,bottom,-baseW],[x,bottom,baseW],[x,y,w],[x,y,-w]]);
-    for(let i=0;i<rings.length-1;i++){
-        const a=rings[i],b=rings[i+1];
-        for(let j=0;j<4;j++) {
-            const k=(j+1)%4;
-            const color=j===2?(Array.isArray(top)?top[i]:top):side;
-            quad(a[j],b[j],b[k],a[k],color,Array.isArray(top) && j===2 && i!==1 && color!==side);
-        }
+    for(let k=1;k<count-1;k++){
+        const end=(rings.length-1)*count;
+        indices.push(0,k,k+1,end,end+k+1,end+k);
     }
-    quad(...rings[0],front);
-    quad(...rings.at(-1).slice().reverse(),front);
-    const geo=new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
-    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors,3));
-    geo.computeVertexNormals();
+    const geo=new THREE.BufferGeometry();geo.setIndex(indices);
+    geo.setAttribute('position',new THREE.Float32BufferAttribute(vertices,3));
+    geo.computeVertexNormals();return geo;
+}
+
+const carCache=new Map(), wheels=new Map();
+const painted=new THREE.MeshStandardMaterial({vertexColors:true,metalness:.47,roughness:.30,envMapIntensity:.42});
+const lacquer=new THREE.MeshPhysicalMaterial({vertexColors:true,metalness:.55,roughness:.25,
+    clearcoat:.88,clearcoatRoughness:.16,envMapIntensity:.47});
+const glazing=new THREE.MeshStandardMaterial({vertexColors:true,metalness:.76,roughness:.11,envMapIntensity:1});
+const moulding=new THREE.MeshStandardMaterial({vertexColors:true,metalness:.32,roughness:.46,envMapIntensity:.5});
+const lens=new THREE.MeshBasicMaterial({vertexColors:true,toneMapped:false});
+const rubber=new THREE.MeshStandardMaterial({vertexColors:true,roughness:.87});
+const alloy=new THREE.MeshStandardMaterial({vertexColors:true,metalness:.92,roughness:.22});
+function materialGroups(batches){
+    const geo=mergeParts(batches.flat());let start=0;
+    batches.forEach((parts,i)=>{
+        const count=parts.reduce((n,p)=>n+(p.geo.index?.count||p.geo.attributes.position.count),0);
+        geo.addGroup(start,count,i);start+=count;
+    });
     return geo;
 }
 
-// --- 3D: cars ---------------------------------------------------------------
-// One merged geometry per (type, colour), built facing +x (front at +x).
+function wheelGeometry(radius) {
+    if(wheels.has(radius))return wheels.get(radius);
+    const tyres=[],rims=[];
+    function disc(r,depth,z,paint,target) {
+        const geo=new THREE.CylinderGeometry(r,r,depth,20);geo.rotateX(Math.PI/2);geo.translate(0,0,z);
+        target.push({geo,color:paint});
+    }
+    disc(radius,2.35,0,'#202029',tyres);
+    disc(radius*.72,.36,1.17,'#b3b9ba',rims);
+    disc(radius*.59,.22,1.38,'#272b32',tyres);
+    for(let k=0;k<7;k++){
+        const a=k*Math.PI*2/7;
+        rims.push(strut([.45*Math.cos(a),.45*Math.sin(a),1.57],
+            [radius*.59*Math.cos(a+.24),radius*.59*Math.sin(a+.24),1.51],.28,'#dedcd6'));
+    }
+    disc(.66,.4,1.56,'#959c9f',rims);
+    const geo=materialGroups([tyres,rims]); wheels.set(radius,geo); return geo;
+}
 
-const carCache = new Map();
-
-export function carGeometry(type, color) {
-    const key = `${type}|${color}`;
-    const hit = carCache.get(key);
-    if (hit) return hit;
-    const def = CARS[type] || CARS.sedan;
-    const L = def.length, W = def.width;
-    const parts = [];
-    const isVan = type === 'van' || type === 'armored';
-    const sports=type==='sports', cabH=isVan?22:sports?14.2:17;
-    const bodyTop=sports?8.7:10.5;
-    // Double-sided trim quads attach to sloped body panels.
-    function trim(a,b,c,d,paint) {
+function carParts(type,color) {
+    const key=type+'|'+color;
+    if(carCache.has(key))return carCache.get(key);
+    const {length:L,width:W}=CARS[type],sports=type==='sports',van=type==='van'||type==='armored';
+    const radius=sports?3.95:4.52,top=sports?8.5:10.15, roof=van?22:sports?13.5:16.4;
+    const paint=[],glass=[],trim=[],lights=[],wheelCenters=[];
+    const body=[];
+    for(const x of [-.5,-.482,-.447,-.406,-.37,-.31,-.25,-.214,-.18,0,.18,.214,.25,.31,.37,.406,.447,.485,.5]){
+        const nearAxle=Math.abs(Math.abs(x)-.31)*L;
+        const arch=nearAxle<radius+1?Math.sqrt((radius+1)**2-nearAxle**2)+radius:3.25;
+        const end=Math.max(0,(Math.abs(x)-.42)/.08);
+        const w=W*(.5-.075*end**2), h=top+.95*Math.exp(-((nearAxle/6)**2))-(x>0?1.55:.55)*end;
+        const low=Math.min(h-.7,arch), sill=2.6;
+        body.push([[0,sill],[w*.80,sill],[w*.93,low],[w*.993,low+.28],[w,h-.8],[w*.98,h-.32],
+            [w*.91,h],[w*.65,h+.14],[0,h+.24],[-w*.65,h+.14],[-w*.91,h],[-w*.98,h-.32],
+            [-w,h-.8],[-w*.993,low+.28],[-w*.93,low],[-w*.80,sill]].map(([z,y])=>[L*x,y,z]));
+    }
+    paint.push({geo:loft(body),color});
+    const tail=van?-.465:sports?-.37:-.34, back=van?-.42:-.16,front=van?.23:.065,nose=van?.42:.29;
+    const cabin=[[tail,top+.45,.435],[back-.035,roof-.48,.369],[back,roof,.354],
+        [front,roof+.05,.35],[front+.036,roof-.50,.366],[nose,top+.38,.423]];
+    const cabinRings=cabin.map(([x,h,tw])=>{
+        const bottom=top-.22;
+        return [[0,bottom],[W*.445,bottom],[W*tw,h-.18],[W*tw*.82,h+.14],
+            [0,h+.28],[-W*tw*.82,h+.14],[-W*tw,h-.18],[-W*.445,bottom]].map(([z,y])=>[x*L,y,z]);
+    });
+    glass.push({geo:loft(cabinRings),color:'#243348'});
+    paint.push(roundedPart((front-back+.035)*L,.84,W*.715,(back+front)*L/2,roof+.05,0,color,.4,2));
+    for(const side of [-1,1]){
+        const pane=(x,y,z)=>[x*L,y,z*W*side];
+        paint.push(strut(pane(tail,top+.47,.44),pane(back,roof,.35),van?.95:.5,color),
+            strut(pane(front,roof,.35),pane(nose,top+.42,.43),.49,color));
+        trim.push(strut(pane(back*.30,top+.13,.447),pane(back*.30,roof-.20,.359),.39,'#242637'),
+            strut(pane(tail,top+.12,.453),pane(nose,top+.12,.453),.21,'#b3b5b1'));
+        if(van) paint.push(roundedPart(L*.56,roof-top-.45,1.4,-L*.15,(roof+top)/2,side*W*.414,color,.64));
+        paint.push(roundedPart(2.9,1.25,2.5,L*.16,top+.85,side*W*.53,color,.54,2));
+        trim.push(roundedPart(L*.42,.68,.62,0,3,side*W*.487,'#41414b'),
+            roundedPart(2.1,.45,.52,-L*.068,top-.86,side*W*.491,'#b6b5b4',.2));
+        // Thin swept light signatures wrap around both corners.
+        lights.push(strut(pane(.491,top-1.92,.12),pane(.478,top-1.65,.42),.39,'#fff3d2'),
+            strut(pane(.478,top-1.65,.42),pane(.443,top-.95,.486),.33,'#fff0c8'),
+            strut(pane(-.505,top-1.18,.05),pane(-.494,top-1.09,.40),.33,'#ff3348'),
+            strut(pane(-.494,top-1.09,.4),pane(-.452,top-.36,.472),.35,'#ff4954'));
+        for(const ax of [-.31,.31]) wheelCenters.push([ax*L,radius,side*W*.474,side]);
+        trim.push(roundedPart(1.4,.95,2.8,-L*.491,3.2,side*W*.30,'#979698',.42));
+    }
+    trim.push(roundedPart(1.4,2.75,W*.78,L*.486,4.65,0,'#262830',.65,2),
+        roundedPart(1.52,3.2,W*.80,-L*.483,4.7,0,'#34313b',.73,2));
+    for(const side of [-1,1]) trim.push(roundedPart(.62,1.5,W*.18,L*.501,5.7,side*W*.28,'#171b20'));
+    paint.push(roundedPart(L*.23,1.05,W*.82,-L*.38,top-.1,0,color,.50,2),
+        roundedPart(L*.18,.85,W*.77,L*.31,top+.03,0,color,.41,2));
+    function panel(points,material,tint) {
         const geo=new THREE.BufferGeometry();
-        geo.setAttribute('position',new THREE.Float32BufferAttribute([...a,...b,...c,...a,...c,...d,...c,...b,...a,...d,...c,...a],3));
-        geo.computeVertexNormals();parts.push({geo,color:paint});
+        const coords=[];
+        for(let i=1;i<points.length-1;i++) coords.push(...points[0],...points[i],...points[i+1],
+            ...points[i+1],...points[i],...points[0]);
+        geo.setAttribute('position',new THREE.Float32BufferAttribute(coords,3));
+        geo.computeVertexNormals();material.push({geo,color:tint});
     }
-    const hull=coachwork([
-        [-L*.5,bodyTop-1,W*.42,3.8,W*.39],[-L*.43,bodyTop+.4,W*.50,3.3,W*.47],
-        [L*.26,bodyTop,W*.50,3.3,W*.47],[L*.48,bodyTop-(sports?2:1),W*.46,3.8,W*.44],
-        [L*.5,bodyTop-2.5,W*.4,4.2,W*.39]], color,color);
-    const cabin=coachwork([
-        [-L*(isVan?.47:.36),bodyTop+.3,W*.45,bodyTop-.8,W*.46],
-        [-L*(isVan?.45:.17),cabH,W*.36,bodyTop-.8,W*.46],
-        [L*(isVan?.26:.055),cabH+.3,W*.36,bodyTop-.8,W*.45],
-        [L*(isVan?.43:.26),bodyTop+.1,W*.43,bodyTop-.8,W*.44]],
-        isVan?color:'#527386',[isVan?color:'#7095a9',color,'#8fb1c2']);
-    // Pillars, rocker panels, mirrors and deeply inset wheel hubs.
+    const noseX=L*.504,tailX=-L*.504;
+    // Recessed radiator opening, splitter, projector lenses, rear diffuser and exhaust tips.
+    panel([[noseX,3.65,-W*.30],[noseX,3.65,W*.30],[noseX,5.66,W*.235],[noseX,5.66,-W*.235]],trim,'#171b26');
+    for(const y of [4,4.45,4.9,5.35])
+        trim.push(boxPart(.14,.11,W*(y<4.6?.54:.48),noseX+.10,y,0,'#54525a'));
+    trim.push(roundedPart(1.4,.58,W*.86,noseX-.55,3.18,0,'#30303c',.24),
+        roundedPart(.85,2.05,W*.80,tailX,top-1.54,0,'#382631',.42,2),
+        roundedPart(1.24,1.60,W*.81,tailX+.14,3.64,0,'#292b33',.44,2));
     for(const side of [-1,1]){
-        if(!isVan) {
-            const base=bodyTop-.1, high=cabH-.6;
-            const v=(x,y)=>[x*L,y,side*W*(.462-(y-base)/(high-base)*.087)];
-            trim(v(-.313,base+.4),v(-.153,high),v(-.07,high),v(-.07,base+.4),'#3c6478');
-            trim(v(-.048,base+.4),v(-.048,high),v(.056,high),v(.225,base+.4),'#80afbd');
-            trim(v(-.05,base),v(-.057,high+.25),v(-.073,high+.25),v(-.069,base),P.sportsInk);
-            trim(v(-.21,base+.5),v(-.14,high-.3),v(-.16,high-.3),v(-.233,base+.5),'#96afba');
-        }
-        parts.push(boxPart(L*.65,1.1,1,0,4,side*W*.476,P.sportsInk));
-        parts.push(boxPart(2,2,2.8,L*.15,bodyTop+.9,side*W*.5,color));
-        parts.push(boxPart(2,1,1,-2,bodyTop-1,side*W*.5,P.glint));
-        if(isVan) parts.push(boxPart(7,6,.7,L*.21,bodyTop+4,side*W*.432,P.carGlass));
-        for(const ax of [-.31,.31]){
-            const wheel=sports?3.85:4.6, faceZ=(W*.50+1)*side;
-            for(let i=0;i<5;i++){
-                const a=i*2*Math.PI/5;
-                parts.push(strut([ax*L+Math.cos(a)*.5,wheel+Math.sin(a)*.5,faceZ],
-                    [ax*L+Math.cos(a)*2.2,wheel+Math.sin(a)*2.2,faceZ],.30,'#dce1e2'));
-            }
-            for(const [r,thick,offset,col] of [[wheel,2.6,.47,P.tire],[wheel*.64,.45,.524,'#788895'],[1,.5,.531,P.sportsInk]]){
-                const geo=new THREE.CylinderGeometry(r,r,thick,12);
-                geo.rotateX(Math.PI/2); geo.translate(L*ax,wheel,W*offset*side);
-                parts.push({geo,color:col});
-            }
-        }
-        parts.push(boxPart(1,1.8,W*.25,-L*.49,bodyTop-1,side*W*.285,'#ff405d'));
-        parts.push(boxPart(1,1.8,W*.23,L*.49,bodyTop-2.2,side*W*.285,'#ffefcb'));
+        const frontPoint=(y,z)=>[noseX+.06,y,side*W*z];
+        panel([frontPoint(top-2.55,.155),frontPoint(top-1.66,.18),
+            frontPoint(top-1.4,.385),frontPoint(top-2.34,.40)],trim,'#253346');
+        lights.push(strut(frontPoint(top-1.79,.19),frontPoint(top-1.56,.38),.16,'#fff3c8'),
+            spherePart(.46,noseX+.2,top-2.03,side*W*.33,'#e4f6fc',.48,.8,1.18));
+        for(const row of [0,.40]) lights.push(roundedPart(.36,.22,W*.29,tailX-.48,top-1.42+row,side*W*.235,'#ff394b',.1));
+        const exhaust=new THREE.CylinderGeometry(.76,.76,1.15,12);exhaust.rotateZ(Math.PI/2);
+        exhaust.translate(tailX-.14,3.55,side*W*.305);trim.push({geo:exhaust,color:'#8b8d8c'});
+        const bore=new THREE.CircleGeometry(.57,12);bore.rotateY(-Math.PI/2);
+        bore.translate(tailX-.73,3.55,side*W*.305);trim.push({geo:bore,color:'#161a21'});
+        const beltZ=side*W*.503;
+        trim.push(strut([-L*.18,top-.8,beltZ],[-L*.15,4.4,beltZ],.12,'#5c414e'),
+            strut([-L*.15,4.4,beltZ],[L*.16,4.4,beltZ],.12,'#493744'),
+            strut([L*.16,4.4,beltZ],[L*.205,top-.8,beltZ],.12,'#5c414e'));
     }
-    if(!isVan){
-        const screenPoint=(t,z)=>[L*(.055+(1-t)*.205)+.04,
-            bodyTop+.17+(cabH+.3-bodyTop-.1)*t,z*W*(.43-.07*t)];
-        trim(screenPoint(.08,-.86),screenPoint(.95,-.40),screenPoint(.95,-.27),screenPoint(.08,-.73),'#9ab4c6');
-        for(const side of [-1,1]) {
-            parts.push(strut(screenPoint(.09,side*.73),screenPoint(.18,side*.10),.15,'#374955'));
-        }
-        // Heated rear screen and bright window surrounds follow the fastback slope.
-        for(const t of [.25,.45,.65,.85]){
-            const x=L*(-.36+.19*t), y=bodyTop+.45+(cabH-bodyTop)*t;
-            parts.push(boxPart(.18,.16,W*(.83-.13*t),x-.15,y,0,'#435568'));
-        }
-        for(const side of [-1,1]){
-            const a=[-L*.36,bodyTop+.35,side*W*.452],b=[-L*.17,cabH+.12,side*W*.363],
-                c=[L*.055,cabH+.42,side*W*.363],d=[L*.26,bodyTop+.18,side*W*.44];
-            parts.push(strut(a,b,.34,color),strut(b,c,.32,color),strut(c,d,.38,color));
+    if(!van){
+        for(let i=1;i<=6;i++){
+            const t=i/8,x=L*(tail+(back-.035-tail)*t)-.18,y=top+.55+(roof-.48-top-.45)*t;
+            trim.push(boxPart(.13,.11,W*(.80-.11*t),x,y,0,'#545562'));
         }
     }
-    parts.push(boxPart(1.1,2.3,W*.89,-L*.49,4.25,0,'#333040'));
-    parts.push(boxPart(.7,1.1,W*.77,-L*.503,bodyTop-1,0,'#762d4e'));
-    for(const side of [-1,1]){
-        parts.push(boxPart(1,1,3,-L*.508,3.9,side*W*.29,P.hub));
-        parts.push(boxPart(1.3,1.4,W*.23,-L*.502,bodyTop-.9,side*W*.27,'#ff6e7a'));
-    }
-    parts.push(boxPart(.5,2.2,5,-L*.506,5.4,0,'#f6dfae'));
-    parts.push(boxPart(.5,1.1,7,L*.503,5.0,0,P.sportsInk));
     if(sports){
-        // Two-tone rear fascia and pinstripes trace the GT's low beltline.
-        for(const side of [-1,1]) parts.push(boxPart(L*.62,.35,.34,-1,7.4,W*.502*side,'#f787aa'));
-        parts.push(boxPart(2.4,1.2,W*.94,-L*.445,bodyTop+3.2,0,color));
-        for(const sign of [-1,1]){
-            parts.push(boxPart(1,3,1,-L*.445,bodyTop+1.6,sign*W*.31,P.sportsInk));
-            trim([L*.30,bodyTop-.20,sign*W*.16],[L*.37,bodyTop-.83,sign*W*.17],
-                [L*.37,bodyTop-.83,sign*W*.26],[L*.30,bodyTop-.20,sign*W*.25],'#69364e');
-        }
+        paint.push(roundedPart(2.8,.72,W*.92,-L*.444,top+1.75,0,color,.35,2));
+        for(const side of [-1,1]) trim.push(roundedPart(.8,1.8,.8,-L*.44,top+.78,side*W*.30,'#383039'));
     }
-    if(type==='taxi') {
-        parts.push(boxPart(7.5,3.4,12,0,cabH+1.9,0,'#ffeb95'));
-        for(const side of [-1,1]) for(let n=-4;n<=4;n++)
-            parts.push(boxPart(2,1.2,.7,n*3.5,8+(n%2===0?0:1),side*W*.495,P.sportsInk));
+    if(type==='taxi'){
+        lights.push(roundedPart(7.6,3.3,12,0,roof+1.98,0,'#ffe5a0',.78));
+        for(let k=-4;k<=4;k++) for(const side of [-1,1])
+            trim.push(boxPart(2,1,.54,k*3.4,top-2+(k%2===0?0:.9),side*W*.492,'#24272b'));
     }
     if(type==='police'){
-        parts.push(boxPart(3,1.5,W*.72,0,cabH+1.1,0,P.sportsInk));
+        trim.push(roundedPart(3,1,W*.70,0,roof+1,0,'#242634'));
         for(const side of [-1,1]){
-            parts.push(boxPart(3,2,W*.32,0,cabH+2.6,side*W*.18,side===1?P.policeRed:P.policeCyan));
-            parts.push(boxPart(L*.75,2,.8,0,8,side*W*.49,P.navy));
+            lights.push(roundedPart(3,1.7,W*.31,0,roof+2.2,side*W*.17,side>0?P.policeRed:P.policeCyan,.62));
+            trim.push(roundedPart(L*.75,2,.6,0,top-2,side*W*.494,P.navy));
         }
     }
-    parts.push({geo:hull,color:null},{geo:cabin,color:null});
-    const geo=mergeParts(parts);
-    carCache.set(key, geo);
-    return geo;
+    const shell=materialGroups([paint,glass,trim,lights]),wheel=wheelGeometry(radius);
+    // The middle-distance mesh keeps the silhouette and livery in one draw.
+    // Wheel faces and glazing stay legible where a cab still spans 200 pixels.
+    const distantParts=[{geo:loft(body),color},{geo:loft(cabinRings),color:'#374858'}];
+    for(const part of [...paint.slice(1),...trim,...lights]){
+        if(part.geo instanceof RoundedBoxGeometry){
+            part.geo.computeBoundingBox();
+            const box=part.geo.boundingBox,sz=box.getSize(new THREE.Vector3()),pt=box.getCenter(new THREE.Vector3());
+            distantParts.push(boxPart(sz.x,sz.y,sz.z,pt.x,pt.y,pt.z,part.color));
+        }else distantParts.push(part);
+    }
+    for(const [x,y,z,side] of wheelCenters){
+        const geo=new THREE.CylinderGeometry(radius,radius,2.28,14);geo.rotateX(Math.PI/2);geo.translate(x,y,z);
+        distantParts.push({geo,color:P.tire});
+        const hub=new THREE.CircleGeometry(radius*.66,14);
+        hub.rotateY(side<0?Math.PI:0);hub.translate(x,y,z+side*1.18);
+        distantParts.push({geo:hub,color:'#a2a6a5'});
+        for(let i=0;i<7;i++){
+            const a=i*Math.PI*2/7;
+            const wheelPoint=(r,offset)=>[x+r*Math.cos(a+offset),y+r*Math.sin(a+offset),z+side*1.20];
+            const tri=[wheelPoint(radius*.20,0),wheelPoint(radius*.54,-.25),wheelPoint(radius*.54,.24)];
+            const hole=new THREE.BufferGeometry();
+            hole.setAttribute('position',new THREE.Float32BufferAttribute((side>0?tri:tri.reverse()).flat(),3));
+            hole.computeVertexNormals();distantParts.push({geo:hole,color:'#353941'});
+        }
+    }
+    const silhouette=[{geo:loft(body.filter((_,i)=>[0,2,4,5,6,9,12,13,14,16,18].includes(i))),color},
+        {geo:loft(cabinRings),color:'#415466'},boxPart((front-back)*L,.8,W*.7,(front+back)*L/2,roof,0,color)];
+    for(const [x,y,z,side] of wheelCenters){
+        const tyre=new THREE.CylinderGeometry(radius,radius,2.3,10);tyre.rotateX(Math.PI/2);tyre.translate(x,y,z);
+        const hub=new THREE.CircleGeometry(radius*.63,10);hub.rotateY(side>0?0:Math.PI);hub.translate(x,y,z+side*1.2);
+        silhouette.push({geo:tyre,color:P.tire},{geo:hub,color:P.hub});
+    }
+    for(const side of [-1,1]){
+        silhouette.push(boxPart(.6,1.1,W*.23,L*.5,top-1.8,side*W*.30,P.headlamp),
+            boxPart(.6,.8,W*.30,-L*.5,top-1.35,side*W*.25,P.taillight));
+    }
+    if(type==='taxi')silhouette.push(boxPart(7.5,3,12,0,roof+1.85,0,P.lamp));
+    if(type==='police')for(const side of [-1,1])silhouette.push(boxPart(3,2,W*.3,0,roof+2.1,side*W*.17,side>0?P.policeRed:P.policeCyan));
+    const model={shell,wheel,wheelCenters,radius,medium:mergeParts(distantParts),distant:mergeParts(silhouette)};
+    carCache.set(key,model);return model;
+}
+
+export function buildCar(type,color) {
+    const model=carParts(type,color),root=new THREE.Group(),fine=new THREE.Group();
+    const shell=new THREE.Mesh(model.shell,[painted,glazing,moulding,lens]);
+    shell.castShadow=shell.receiveShadow=true;fine.add(shell,carLettering(type));
+    const tyres=model.wheelCenters.map(([x,y,z,side])=>{
+        const tyre=new THREE.Mesh(model.wheel,[rubber,alloy]);tyre.position.set(x,y,z);
+        tyre.rotation.y=side>0?0:Math.PI;fine.add(tyre);return tyre;
+    });
+    const lod=new THREE.Mesh(model.distant,painted);lod.castShadow=lod.receiveShadow=true;
+    root.add(fine,lod);root.userData={fine,lod,shell,tyres,color,model,radius:model.radius};
+    return root;
+}
+
+export function poseCar(root,car,range,hero){
+    const {fine,lod,shell,tyres,radius}=root.userData;
+    const near=hero || range<165;
+    fine.visible=near;lod.visible=!near;
+    if(root.userData.color!==car.color){
+        const model=carParts(car.type,car.color);
+        shell.geometry=model.shell;root.userData.model=model;root.userData.color=car.color;
+    }
+    if(!near)lod.geometry=range<520?root.userData.model.medium:root.userData.model.distant;
+    shell.material[0]=hero?lacquer:painted;
+    if(near) tyres.forEach((tyre,i)=>{
+        const side=Math.sign(tyre.position.z);
+        tyre.rotation.order='YXZ';tyre.rotation.y=(side>0?0:Math.PI)-(i%2?car.steer*.32:0);
+        tyre.rotation.z=-side*(car.travel||0)/radius;
+    });
 }
 
 const detailMaterials=new Map();
@@ -755,89 +979,18 @@ export function carLettering(type) {
         const m=new THREE.Mesh(detailQuads.get(key),material);
         m.position.set(x,y,z);m.rotation.y=ry;details.add(m);
     }
-    const plate=lettering(type==='sports'?'MIRAGE':type==='police'?'NBPD':'N • BAY','#f7ddb0','#373a52','NEON BAY');
-    add(5.8,2.25,-def.length*.517,5.4,0,-Math.PI/2,plate);
+    const plate=lettering(type==='sports'?'N B  ·  0 7':type==='police'?'NBPD':'N • BAY','#f7ddb0','#373a52','NEON BAY');
+    add(5.8,2.25,-def.length*.526,5.21,0,-Math.PI/2,plate);
     if(type==='taxi'){
         const cab=lettering('TAXI','#ffe9a8','#262738');
-        for(const side of [-1,1])add(11,3.1,side*3.82,19,0,side*Math.PI/2,cab);
-        for(const side of [-1,1])add(7,2.8,0,19,side*6.1,side===1?0:Math.PI,cab);
+        for(const side of [-1,1])add(11,3.1,side*3.82,18.4,0,side*Math.PI/2,cab);
+        for(const side of [-1,1])add(7,2.8,0,18.4,side*6.1,side===1?0:Math.PI,cab);
     }
     if(type==='police') {
         const badge=lettering('NBPD','#233145','#f3eddb');
         for (const side of [-1,1]) add(13,3.7,0,7,side*(def.width*.5+.5),side===1?0:Math.PI,badge);
     }
     return details;
-}
-
-// --- 3D: people -------------------------------------------------------------
-// One merged geometry per outfit, standing ~28 units tall, facing +x.
-
-const personCache = new Map();
-
-export function personGeometry(o) {
-    const key = [o.jacket, o.skin, o.hair, o.trousers, o.officer ? '1' : o.player ? 'jax' : '0'].join('|');
-    const hit = personCache.get(key);
-    if (hit) return hit;
-    const parts = [];
-    const torso=cylPart(5.3,4.1,8.4,0,16.4,0,o.jacket,8);
-    // Scale about the vertical axis to keep shoulders wider than the waist.
-    torso.geo.scale(.64,1,1);
-    parts.push(torso,cylPart(1.8,1.8,2,0,21,0,o.skin,8));
-    const hips=cylPart(4.15,4,3,0,11.7,0,o.trousers,8);
-    hips.geo.scale(.69,1,1);parts.push(hips);
-    for(const side of [-1,1]){
-        const z=side*2.18;
-        parts.push(strut([0,11.8,z],[.28,6,z*1.06],1.96,o.trousers),
-            strut([.28,6,z*1.06],[-.3,1.5,z*1.13],1.63,o.trousers),
-            spherePart(2.15,.8,1.3,z*1.13,'#282a36',1.42,.62,.86,8),
-            spherePart(1.9,-.15,18.9,side*4.1,o.jacket,1,.95,1,8),
-            strut([0,19.1,side*4.4],[-.3,15.1,side*5.15],1.9,o.jacket),
-            strut([-.3,15.3,side*5.15],[.55,11.4,side*5.45],1.24,o.skin),
-            spherePart(1.34,.65,10.95,side*5.45,o.skin,.84,1.24,.82,7));
-    }
-    parts.push(spherePart(3.35,.14,24.15,0,o.skin,.91,1.19,.89,10));
-    parts.push(spherePart(3.42,-.55,25.65,0,o.hair,.91,.79,.9,10));
-    parts.push(spherePart(2.8,-1.18,24,0,o.hair,.66,.97,.91,9));
-    parts.push(spherePart(.81,3.1,24.05,0,o.skin,.85,1,.78,6));
-    for(const side of [-1,1]){
-        parts.push(spherePart(.69,.07,24,side*2.79,o.skin,.8,1,.55,6));
-        parts.push(boxPart(.4,.33,1.05,2.80,24.6,side*1.16,'#49333b'));
-        parts.push(boxPart(.35,.32,1.22,2.81,25.06,side*1.15,o.hair));
-    }
-    if(o.player){
-        for(const side of [-1,1]){
-            parts.push(strut([-2.45,19.5,side*.25],[-2.5,17.8,side*3.4],.37,'#ffe0aa'),
-                strut([2.38,19.8,side*2.5],[2.8,17.3,side*.4],.43,'#efc49e'));
-        }
-        const waist=cylPart(4.23,4.15,1.2,0,12.6,0,'#174854',8);
-        waist.geo.scale(.67,1,1); parts.push(waist);
-        // The stitched sun-and-wings patch is visible from the chase camera.
-        parts.push(spherePart(1.64,-3.03,16.8,0,'#ffb684',.2,.91,1,9));
-        for(const side of [-1,1]) {
-            parts.push(strut([-3.09,16.9,side*.7],[-2.5,17.7,side*3],.36,'#fde1a6'),
-                strut([-3.15,15.5,-1.28],[-3.15,15.5,1.28],.16,P.jacket));
-        }
-        parts.push(boxPart(.55,.9,5,2.71,24.8,0,'#28263a'));
-    }
-    if (o.officer) {
-        parts.push(boxPart(9.5, 2, 9.5, 0, 27.6, 0, '#1E2A44'));
-        parts.push(boxPart(10.5, 1, 4, 3.5, 26.8, 0, '#1E2A44'));
-    }
-    const geo = mergeParts(parts);
-    const pos=geo.attributes.position;
-    geo.morphAttributes.position=[-1,1].map(sign=>{
-        const bent=pos.clone();
-        for(let i=0;i<pos.count;i++){
-            const y=pos.getY(i), z=pos.getZ(i);
-            const arm=Math.abs(z)>3.65 && y<20, leg=y<11.7 && !arm;
-            if(!leg && !arm) continue;
-            const stride=(arm?-(20-y)*.23:(11.7-y)*.27)*Math.sign(z)*sign;
-            bent.setXYZ(i,pos.getX(i)+stride,y+Math.max(0,stride)*.22,z);
-        }
-        return bent;
-    });
-    personCache.set(key, geo);
-    return geo;
 }
 
 // --- 3D: pickups ------------------------------------------------------------

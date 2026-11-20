@@ -9,10 +9,11 @@ export function readSave() {
         if (d.version !== 1 || !Number.isFinite(d.cash)) {
             return null;
         }
+        const reputation = Number(d.reputation), best = Number(d.best);
         return {
-            tapes: Array.isArray(d.tapes) ? [...new Set(d.tapes.filter(id=>/^tape-(?:[1-9]|10)$/.test(id)))] : [],
-            reputation:Math.max(0,Number(d.reputation)||0), rosaVisit:d.rosaVisit===true,
-            version: 1, cash: Math.max(0, Math.min(99999999, d.cash)), best: Math.max(0, Number(d.best) || 0), missions: Array.isArray(d.missions) ? d.missions.filter(x => typeof x === 'string') : [], unlockedCars: Array.isArray(d.unlockedCars) ? d.unlockedCars.filter(x => typeof x === 'string') : [], ammo: Math.min(120, Math.max(0, Number.isFinite(d.ammo) ? d.ammo : 36)), settings: { muted: !!d.settings?.muted, music: d.settings?.music !== false }, savedAt: typeof d.savedAt === 'number' ? d.savedAt : 0
+            tapes: Array.isArray(d.tapes) ? [...new Set(d.tapes.filter(id=>typeof id==='string' && /^tape-(?:[1-9]|10)$/.test(id)))] : [],
+            reputation:Number.isFinite(reputation) ? Math.max(0,reputation) : 0, rosaVisit:d.rosaVisit===true,
+            version: 1, cash: Math.max(0, Math.min(99999999, d.cash)), best: Number.isFinite(best) ? Math.max(0,best) : 0, missions: Array.isArray(d.missions) ? d.missions.filter(x => typeof x === 'string') : [], unlockedCars: Array.isArray(d.unlockedCars) ? d.unlockedCars.filter(x => typeof x === 'string') : [], ammo: Math.min(120, Math.max(0, Number.isFinite(d.ammo) ? d.ammo : 36)), settings: { muted: !!d.settings?.muted, music: d.settings?.music !== false }, savedAt: typeof d.savedAt === 'number' ? d.savedAt : 0
         };
     }
     catch {

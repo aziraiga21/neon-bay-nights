@@ -5,9 +5,10 @@
 // ammo, and whichever car he is sitting in (null on foot). Everything
 // else in the game reads those fields directly, so this module is the
 // one place that moves them.
-import { PALETTE as P, CARS, GARAGE_PRICES, TAPE_COUNT, CAR_COLORS, TUNE, clamp, dist } from './config.js';
+import { PALETTE as P, CARS, GARAGE_PRICES, TAPE_COUNT, CAR_COLORS, TUNE, JUMP, gearValue, angleDelta, lerp, clamp, dist } from './config.js';
 import { isSolid, moveCircle, lineClear } from './world.js';
 import { makeCar, nearestCar, canExit } from './vehicles.js';
+import {makeGait,updateGait,approach} from './locomotion.js';
 import { missionEvent } from './missions.js';
 
 const START_CASH = 350;
@@ -18,8 +19,8 @@ const PICKUP_REACH = 24;
 const SERVICE_REACH = 85;
 const REPAIR_REACH = 100;
 const EXIT_COOLDOWN = 0.6;
-const STAMINA_DRAIN = 0.22;
-const STAMINA_REGEN = 0.16;
+const STAMINA_DRAIN = 0.08;
+const STAMINA_REGEN = 0.12;
 const HEALTH_SNACK = 40;
 const AMMO_LOOSE = 24;
 
@@ -34,6 +35,8 @@ export function makePlayer(world, save = null) {
         cash: save && Number.isFinite(save.cash) ? save.cash : START_CASH,
         ammo: save && Number.isFinite(save.ammo) ? save.ammo : START_AMMO,
         car: null, carCooldown: 0, invincible: 0, stamina: 1,
+        gait:makeGait(), speed:0, phase:0, z:0, vz:0, travelHeading:spawn.h, exhausted:false,
+        transition:null, landing:0, hitStop:0, flinch:0, recoil:0, punchLeft:false,
         moving: false, armed: false, punch: 0, punchCooldown: 0,
         shotCooldown: 0, flash: 0, fireHeading: 0,
         jacket: P.jacket, skin: '#C48A62', hair: P.ink, trousers: P.trousers
@@ -48,8 +51,16 @@ export function updatePlayer(game, dt) {
     p.carCooldown = Math.max(0, p.carCooldown - dt);
     p.flash = Math.max(0, p.flash - dt);
     p.punch = Math.max(0, p.punch - dt);
-    p.armed = p.ammo > 0 && game.input.mouse.aim;
-    if (p.car) {
+    p.flinch=Math.max(0,p.flinch-dt);p.recoil=Math.max(0,p.recoil-dt);
+    p.landing=Math.max(0,p.landing-dt);
+    p.armed=p.ammo>0 && game.input.mouse.aim && !p.transition && !p.z;
+    if(p.armed){
+        const spot=game.screenToWorld(game.input.mouse.x,game.input.mouse.y);
+        if(dist(spot,p)>.01)p.fireHeading=Math.atan2(spot.y-p.y,spot.x-p.x);
+        else p.fireHeading=p.h;
+    }
+    if(p.transition) advanceTransition(game,dt);
+    else if (p.car) {
         driveSeat(game, dt);
     } else {
         walkStep(game, dt);
@@ -77,23 +88,56 @@ function driveSeat(game, dt) {
 function walkStep(game, dt) {
     const p = game.player;
     const axis = game.input.axes();
-    const sprinting = game.input.down('ShiftLeft', 'ShiftRight') && p.stamina > 0.02
-        && (axis.x !== 0 || axis.y !== 0);
-    if (sprinting) p.stamina = Math.max(0, p.stamina - STAMINA_DRAIN * dt);
-    else p.stamina = Math.min(1, p.stamina + STAMINA_REGEN * dt);
-    const speed = sprinting ? TUNE.sprint : TUNE.walk;
-    const len = Math.hypot(axis.x, axis.y);
+    const len=Math.hypot(axis.x,axis.y);
+    const oldX=p.x,oldY=p.y,oldH=p.h,launchSpeed=p.speed;
+    const direction=len?Math.atan2(axis.y,axis.x):p.travelHeading;
+    const walk=game.input.down('ControlLeft','ControlRight');
+    if(p.exhausted && p.stamina>.30) p.exhausted=false;
+    const sprint=len && !walk && !p.armed && !p.exhausted && game.input.down('ShiftLeft','ShiftRight');
+    p.stamina=clamp(p.stamina+(sprint?-STAMINA_DRAIN:STAMINA_REGEN)*dt,0,1);
+    if(!p.stamina)p.exhausted=true;
+    let target=len?(walk?TUNE.walk:sprint?TUNE.sprint:TUNE.jog):0;
     if (game.input.tap('KeyG') && nearestService(game,REPAIR_REACH)?.kind==='garage') {
         game.mode='garage'; game.input.clear(); game.onMissionScreen?.('garage'); return;
     }
-    p.moving = len > 0;
-    if (len > 0) {
-        const nx = axis.x / len;
-        const ny = axis.y / len;
-        p.h = Math.atan2(ny, nx);
-        moveCircle(game.world, p, nx * speed * dt, ny * speed * dt, TUNE.playerRadius);
+    const air=p.z>0;
+    const jumpPressed=game.input.tap('Space');
+    if(!air){
+        const heading=p.armed?p.fireHeading:direction;
+        const delta=angleDelta(p.h,heading);
+        if(p.armed){
+            target*=.55;
+            if(Math.cos(direction-heading)<-.15)target*=.8;
+            p.h=heading;
+        }else if(len){
+            if(Math.abs(delta)>2*Math.PI/3 && p.speed>TUNE.walk)target=Math.min(target,p.speed*.3);
+            const limit=gearValue(p.speed,'turn')*dt;
+            p.h+=clamp(delta*(1-Math.exp(-12*dt)),-limit,limit);
+        }
+        if(len)p.travelHeading=p.armed?direction:p.h;
+        p.speed=approach(p.speed,target,target>p.speed?4.5:len?5.5:6.5,dt);
+        if(p.speed<.05 && !len)p.speed=0;
+        if(jumpPressed && !p.punch && !p.hitStop){
+            p.vz=JUMP.takeoff;p.speed=launchSpeed*.9;p.armed=false;
+        }
+    }else if(len){
+        const limit=.1*gearValue(p.speed,'turn')*dt;
+        p.travelHeading+=clamp(angleDelta(p.travelHeading,direction),-limit,limit);
     }
-    if (game.input.tap('KeyE') && p.carCooldown <= 0) interact(game);
+    const airborne=air||p.vz>0;
+    if(airborne){
+        p.z+=p.vz*dt-.5*JUMP.gravity*dt*dt;p.vz-=JUMP.gravity*dt;
+        if(p.z<=1e-7){p.z=p.vz=0;p.landing=.33;game.burst(p.x,p.y,'dust',5);}
+    }
+    const stride=p.speed*(p.punch>0?.5:1)*(p.flinch>.03?.6:1)*Math.max(0,dt-p.hitStop);
+    p.hitStop=Math.max(0,p.hitStop-dt);
+    moveCircle(game.world,p,Math.cos(p.travelHeading)*stride,Math.sin(p.travelHeading)*stride,TUNE.playerRadius);
+    const distance=Math.hypot(p.x-oldX,p.y-oldY);
+    p.moving=distance/dt>4;
+    updateGait(p.gait,{speed:distance/dt,distance,turn:angleDelta(oldH,p.h)/dt,braking:!len,airborne},dt);
+    p.phase=p.gait.phase;
+    if(game.input.tap('KeyE') && p.carCooldown<=0 && !airborne) interact(game);
+
 }
 
 // --- getting in and out --------------------------------------------------
@@ -102,7 +146,7 @@ function walkStep(game, dt) {
 // in reach, otherwise take the nearest usable ride.
 export function interact(game) {
     const p = game.player;
-    if (p.car) return false;
+    if (p.car || p.transition || p.z>0) return false;
     if (useService(game)) return true;
     const car = nearestCar(game, TUNE.enterDistance);
     if (!car) return false;
@@ -120,6 +164,18 @@ function climbIn(game, car) {
         game.audio.play('empty');
         return false;
     }
+    const side=CARS[car.type].width*.5+5;
+    const doors=[-1,1].map(sign=>({x:car.x-Math.sin(car.h)*side*sign,
+        y:car.y+Math.cos(car.h)*side*sign,sign}));
+    const door=doors.filter(v=>!isSolid(game.world,v.x,v.y,7) && lineClear(game.world,p,v))
+        .sort((a,b)=>dist(a,p)-dist(b,p))[0];
+    if(!door)return false;
+    p.transition={kind:'enter',time:0,car,start:{x:p.x,y:p.y},origin:{x:car.x,y:car.y},side:side*door.sign};
+    p.armed=false;p.speed=0;return true;
+}
+
+function takeSeat(game,car){
+    const p=game.player;
     if (car.driver) {
         car.driver = false;
         const runner = game.addPed(car.x, car.y, true);
@@ -153,12 +209,45 @@ function stepOut(game) {
         return false;
     }
     p.car = null;
-    p.x = spot.x;
-    p.y = spot.y;
-    p.carCooldown = EXIT_COOLDOWN;
-    p.moving = false;
+    p.transition={kind:'exit',time:0,car,start:{x:car.x,y:car.y},spot};
+    p.armed=false;p.speed=0;p.moving=false;
     game.audio.play('enter');
     return true;
+}
+
+function advanceTransition(game,dt){
+    const p=game.player,tr=p.transition,car=tr.car;
+    tr.time+=dt;
+    const x=p.x,y=p.y;
+    if(tr.kind==='enter'){
+        if(car.wreck || !game.cars.includes(car) || dist(car,tr.origin)>TUNE.enterDistance*.6 ||
+            (car.type==='police' && !car.owned && game.police.stars<2)){
+            p.transition=null;p.moving=false;p.travelHeading=p.h;
+            game.notify('RIDE UNAVAILABLE',car.wreck?'The engine is wrecked.':'The car is out of reach.',P.carCoral);
+            return;
+        }
+        const doorX=car.x-Math.sin(car.h)*tr.side,doorY=car.y+Math.cos(car.h)*tr.side;
+        const walk=clamp(tr.time/.25,0,1),slide=clamp((tr.time-.5)/.3,0,1);
+        p.x=lerp(lerp(tr.start.x,doorX,walk),car.x,slide);
+        p.y=lerp(lerp(tr.start.y,doorY,walk),car.y,slide);
+        const face=walk<1?Math.atan2(doorY-tr.start.y,doorX-tr.start.x):Math.atan2(car.y-doorY,car.x-doorX);
+        p.h+=angleDelta(p.h,face)*(1-Math.exp(-12*dt));
+        if(tr.time>=.8-1e-8){p.transition=null;takeSeat(game,car);}
+    }else{
+        const slide=clamp(tr.time/.3,0,1),stand=clamp((tr.time-.3)/.3,0,1);
+        const k=.9*slide+.1*stand;
+        p.x=lerp(tr.start.x,tr.spot.x,k);p.y=lerp(tr.start.y,tr.spot.y,k);
+        if(tr.time>=.6-1e-8){
+            const blocked=game.cars.some(v=>v!==car && dist(v,p)<22);
+            if(blocked){const safe=canExit(game,car)||huntExitSpot(game,car);if(safe)Object.assign(p,safe);}
+            p.transition=null;p.carCooldown=EXIT_COOLDOWN;p.travelHeading=p.h;
+        }
+    }
+    const distance=Math.hypot(p.x-x,p.y-y);
+    const walking=tr.kind==='enter'?tr.time<.25:tr.time>.3;
+    p.moving=walking && distance>.01;
+    updateGait(p.gait,{speed:p.moving?TUNE.walk:0,distance:p.moving?distance:0},dt);
+    p.phase=p.gait.phase;
 }
 
 // canExit already tries both flanks; this is the last resort, a slow
@@ -306,6 +395,7 @@ export function hurtPlayer(game, amount) {
     const p = game.player;
     if (game.mode !== 'play' || p.invincible > 0 || amount <= 0) return;
     p.health = Math.max(0, p.health - amount);
+    p.flinch=.33;
     p.invincible = 0.45;
     game.damageFlash = Math.min(1, game.damageFlash + 0.55);
     game.shake = Math.min(9, game.shake + 3);

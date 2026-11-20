@@ -1,3 +1,4 @@
+import {makeGait} from './locomotion.js';
 import { PALETTE as P, dist } from './config.js';
 import { makeCar } from './vehicles.js';
 import { leaveCab } from './pedestrians.js';
@@ -44,7 +45,7 @@ export function installMission(game, mission) {
 }
 function relocate(game, x, y, h = 0) {
     if (game.player.car) game.player.car.ai = 'parked';
-    Object.assign(game.player, { x, y, h, car: null, carCooldown: 0, invincible: 2, armed: false });
+    Object.assign(game.player, { x,y,h,travelHeading:h,transition:null,speed:0,z:0,vz:0,gait:makeGait(),phase:0,landing:0,hitStop:0,flinch:0,punch:0,car:null,carCooldown: 0, invincible: 2, armed: false });
     Object.assign(game.camera, { x, y, zoom: 1.3 });
 }
 function jobCar(game, type, point, color, h = 0) {
@@ -139,7 +140,7 @@ function completeMission(game) {
 }
 function syncObjective(game) {
     const m = game.mission.active;
-    if (!m || !['briefing', 'active'].includes(m.phase)) return;
+    if (!m || (m.phase !== 'briefing' && m.phase !== 'active')) return;
     const p = game.player, driving = p.car === m.target;
     if (m.id === 'm1') {
         m.objective = m.package ? 'Deliver Rosa’s package to Glasswater Hotel.' : 'Enter the Mirage with Rosa’s package. Press E.';
@@ -173,7 +174,8 @@ export function missionEvent(game, type, data = {}) {
         game.audio.play('wanted');
         game.notify('BAY TRUST · SILENT ALARM', 'Three stars. Break sight and protect the van.', P.policeRed);
     }
-    syncObjective(game);
+    // updateMissions already refreshed moving objectives on this fixed tick.
+    if (type !== 'tick') syncObjective(game);
 }
 export function updateMissions(game, dt) {
     const m = game.mission.active;

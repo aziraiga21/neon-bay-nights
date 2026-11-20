@@ -4,7 +4,7 @@
 // bottom-left. Tab opens the same map full-screen, where a click drops
 // a waypoint.
 import { districtAt, route, nearestNode } from './world.js';
-import { CARS, TAPE_COUNT, PALETTE as P, ROADS_X, ROADS_Y, money, clamp } from './config.js';
+import { CARS, TAPE_COUNT, TUNE, PALETTE as P, ROADS_X, ROADS_Y, money, clamp } from './config.js';
 import { round, text, ellipse, polygon } from './art.js';
 
 const MAP_W = 432;
@@ -145,7 +145,7 @@ function drawWanted(ctx, game, w) {
         star(ctx,cx,48,stars>=3 && i<stars?9.5+Math.sin(game.time*5)*1.1:9,i<stars?'#ffc36a':'#535667');
     }
     text(ctx, game.clock, w - 26, 30, 12, P.paper, 'right');
-    text(ctx, game.dusk > 0.55 ? 'SUNSET' : 'DAY', w - 26, 52, 9, P.paper, 'right');
+    text(ctx, game.dusk > .86 ? 'NIGHT' : game.dusk > .55 ? (game.clock < '12:00' ? 'DAWN' : 'SUNSET') : 'DAY', w - 26, 52, 9, P.paper, 'right');
 }
 
 function star(ctx, cx, cy, r, color) {
@@ -254,12 +254,12 @@ function drawHint(ctx, game, w, h) {
     else {
         let near = false;
         for (const car of game.cars) {
-            if (!car.wreck && Math.hypot(car.x - p.x, car.y - p.y) < 60) {
+            if (!car.wreck && Math.hypot(car.x - p.x, car.y - p.y) < TUNE.enterDistance) {
                 near = true;
                 break;
             }
         }
-        hint = near ? 'E ENTER / STEAL CAR' : 'WASD MOVE · SPACE FIRE · F PUNCH · TAB MAP';
+        hint = near ? 'E ENTER / STEAL CAR' : 'SPACE JUMP · RMB AIM · LMB ATTACK · TAB MAP';
     }
     ctx.font='bold 11px Arial';
     const sw=ctx.measureText(hint).width+22, y=p.car?h-134:h-45;

@@ -138,6 +138,8 @@ export function makeWorld(seed) {
         });
     }
     for(const x of ROADS_X) for(const y of ROADS_Y.slice(0,-1)) {
+        props.push({kind:'bin',x:x-69,y:y+180},{kind:'manhole',x:x+12,y:y+96});
+        if(y>=1792) props.push({kind:'cone',x:x+49,y:y+121},{kind:'cone',x:x+49,y:y+137});
         props.push({kind:'hydrant',x:x+57,y:y+83}, {kind:'planter',x:x-76,y:y+236});
     }
     world.services = [
@@ -213,7 +215,10 @@ export function route(world, from, to) {
     return path;
 }
 export function roadDistance(x, y) {
-    return Math.min(...ROADS_X.map(v => Math.abs(v - x)), ...ROADS_Y.map(v => Math.abs(v - y)));
+    let closest = Infinity;
+    for (const road of ROADS_X) closest = Math.min(closest, Math.abs(road - x));
+    for (const road of ROADS_Y) closest = Math.min(closest, Math.abs(road - y));
+    return closest;
 }
 export function isSolid(world, x, y, r = 0) {
     if (x < 40 + r || y < 40 + r || x > world.water - 12 - r || y > world.height - 40 - r) {

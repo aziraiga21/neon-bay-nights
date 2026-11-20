@@ -16,15 +16,19 @@
 // still paints, so every render path the tests exercise keeps working.
 import * as THREE from './../vendor/three.module.min.js';
 import { createRandom } from './random.js';
-import { CARS, PALETTE as P, clamp, lerp, angleDelta } from './config.js';
+import { CARS, PALETTE as P, clamp, lerp, angleDelta, gearValue } from './config.js';
 import {
-    buildCityGeometry, buildPalms, buildSigns, carGeometry, carLettering, personGeometry,
+    buildCityGeometry, buildPalms, buildSigns, buildCar, poseCar,
     pickupGeometry, makeBeacon, yawFor
 } from './art.js';
+import { RoomEnvironment } from '../vendor/RoomEnvironment.js';
+import {buildPersonRig,poseRig} from './rig.js';
+import {solvePose,makeGait} from './locomotion.js';
+import {isSolid} from './world.js';
 import { makeMap, drawHUD, drawFullMap } from './hud.js';
 
 const FOV = 55;
-const FOOT_DIST = 82, FOOT_HEIGHT = 38;
+const idleGait = makeGait();
 const CAR_DIST = 109, CAR_HEIGHT = 37;
 const LOOK_AHEAD = 30, LOOK_HEIGHT = 14;
 const MAX_PARTICLES = 500;
@@ -59,35 +63,67 @@ function weatherTexture() {
 
 // Neutral grain tiles in world units across all asphalt strips, including
 // crossroads. A few surface repairs break up the long coastal straight.
-function roadMaterial() {
-    const rng=createRandom(714), c=document.createElement('canvas');c.width=c.height=256;
-    const ctx=c.getContext('2d'), im=ctx.createImageData(256,256);
-    for(let i=0;i<im.data.length;i+=4){
-        const k=rng.range(211,253);im.data[i]=k;im.data[i+1]=k;im.data[i+2]=k;im.data[i+3]=255;
+function streetMaterial(paving=false) {
+    const rng=createRandom(paving?840:714), c=document.createElement('canvas');
+    const size=384;c.width=paving?size:3*size;c.height=size;
+    const ctx=c.getContext('2d'), im=ctx.createImageData(c.width,size);
+    for(let y=0;y<size;y++) for(let x=0;x<c.width;x++){
+        const i=4*(y*c.width+x);
+        const lane=Math.sin((x%size)/size*Math.PI*4)**8;
+        const grain=rng.range(-7,7)+(paving?0:4*lane);
+        const base=paving?[182,167,157]:[62,61,70];
+        for(let k=0;k<3;k++) im.data[i+k]=base[k]+grain;
+        im.data[i+3]=255;
     }
-    ctx.putImageData(im,0,0);ctx.strokeStyle='#73717a59';ctx.lineWidth=1.15;
-    ctx.beginPath();ctx.moveTo(20,177);ctx.lineTo(31,174);ctx.lineTo(32,168);ctx.lineTo(44,161);ctx.stroke();
-    const map=new THREE.CanvasTexture(c);map.wrapS=map.wrapT=THREE.RepeatWrapping;
-    map.colorSpace=THREE.SRGBColorSpace;return new THREE.MeshLambertMaterial({map,vertexColors:true});
+    ctx.putImageData(im,0,0);
+    if(paving){
+        for(let i=0;i<size;i+=96){
+            ctx.fillStyle='#95857b';ctx.fillRect(0,i,size,2);
+            for(let j=-48;j<size;j+=96) ctx.fillRect(j+(i/96%2)*48,i,2,96);
+            ctx.fillStyle='#cfbfb0';ctx.fillRect(0,i+2,size,1);
+        }
+    }else{
+        const stripe=(x,y,w,h,color)=>{ctx.fillStyle=color;ctx.fillRect(x,y,w,h);};
+        for(const tile of [0,2]){
+            const off=tile*size;
+            for(let y=0;y<size;y+=64){
+                stripe(off+size*.495,y+15,2.8,35,'#dac190');
+                if(tile===0) stripe(off+size*.508,y+15,2.8,35,'#dac190');
+            }
+            for(const edge of [.046,.954]) stripe(off+size*edge,0,2.8,size,'#d5c9b5');
+        }
+        for(let k=0;k<10;k++){
+            const x=(k+.65)*size/10;
+            for(const y of [6,size-16]) stripe(x,y,19,10,'#d4cec1');
+        }
+        for(const x of [size+11,size*2-21]){
+            for(let k=0;k<9;k++) stripe(x,25+39*k,15,21,'#d4cec1');
+        }
+        ctx.strokeStyle='#302f365c';ctx.lineWidth=1.4;
+        for(let n=0;n<19;n++){
+            let x=rng()*c.width,y=rng()*size;ctx.beginPath();ctx.moveTo(x,y);
+            for(let k=0;k<5;k++)ctx.lineTo(x+=rng.range(-5,6),y+=rng.range(1,6));
+            ctx.stroke();
+        }
+        for(let n=0;n<17000;n++) stripe(rng()*c.width,rng()*size,1.4,1.2,'#44424a39');
+    }
+    const map=new THREE.CanvasTexture(c);
+    if(paving)map.wrapS=map.wrapT=THREE.RepeatWrapping;
+    map.colorSpace=THREE.SRGBColorSpace;map.anisotropy=4;
+    return new THREE.MeshStandardMaterial({map,roughness:paving?.92:.96,envMapIntensity:.24});
 }
 
-function animateStride(mesh,moving,phase) {
-    const stride=moving?Math.sin(phase):0;
-    mesh.morphTargetInfluences[0]=Math.max(0,-stride);
-    mesh.morphTargetInfluences[1]=Math.max(0,stride);
-}
-
-const sunDirection = new THREE.Vector3(.025,.165,-.986).normalize();
+const sunDirection = new THREE.Vector3(-.16,.145,-.976).normalize();
 function makeSky(noise) {
     const uniforms={
         cloud:{value:noise}, sunDir:{value:sunDirection}, dusk:{value:.65},
-        day:{value:new THREE.Color(P.sky)}, night:{value:new THREE.Color(P.skyDusk)},
-        horizon:{value:new THREE.Color(P.horizon)}, ember:{value:new THREE.Color(P.horizonDusk)}
+        day:{value:new THREE.Color(P.sky)}, night:{value:new THREE.Color(0x34244e)},
+        horizon:{value:new THREE.Color(P.horizon)}, ember:{value:new THREE.Color(0xff995e)}
     };
     const mat=new THREE.ShaderMaterial({
         uniforms, side:THREE.BackSide, depthWrite:false,
         vertexShader:`varying vec3 ray;
-        void main(){ray=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
+        void main(){ray=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);gl_Position.z=gl_Position.w;}`,
         fragmentShader:`varying vec3 ray; uniform sampler2D cloud;
         uniform vec3 sunDir,day,night,horizon,ember; uniform float dusk;
         void main(){
@@ -100,17 +136,21 @@ function makeSky(noise) {
             float az=atan(d.z,d.x)/6.283185;
             vec2 uv=vec2(az*4.,y*2.6);
             float n=texture2D(cloud,uv).r*.82+texture2D(cloud,uv*3.+.21).r*.18;
-            float clouds=smoothstep(.48,.64,n)*smoothstep(.01,.09,y)*(1.-smoothstep(.33,.66,y));
+            float clouds=smoothstep(.45,.63,n)*smoothstep(.01,.09,y)*(1.-smoothstep(.33,.66,y));
             col=mix(col,mix(vec3(.95,.55,.45),vec3(.23,.16,.31),smoothstep(.1,.43,y)),clouds*.59);
             float r=length(d-sunDir);
-            col+=vec3(.85,.37,.12)*exp(-r*8.)*.70;
-            col=mix(col,vec3(1.,.87,.57),1.-smoothstep(.052,.0535,r));
+            col+=vec3(.58,.24,.08)*exp(-r*10.)*.8;
+            float nightfall=smoothstep(.76,1.,dusk);
+            col=mix(col,vec3(.026,.036,.085)*(1.-.60*y),nightfall*.95);
+            col=mix(col,mix(vec3(1.,.87,.57),vec3(.69,.76,.94),nightfall),1.-smoothstep(.035-.019*nightfall,.036-.019*nightfall,r));
             gl_FragColor=vec4(col,1.);
             #include <colorspace_fragment>
         }`
     });
     const sky=new THREE.Mesh(new THREE.SphereGeometry(6500,32,16),mat);
-    sky.renderOrder=-10; return sky;
+    // Its depth is always the far plane. Opaque streets and walls can reject
+    // hidden sky fragments before the two cloud texture samples.
+    sky.renderOrder=10; return sky;
 }
 
 function makeWater(world, noise) {
@@ -141,10 +181,10 @@ function makeWater(world, noise) {
 
 // A real WebGL context exposes numeric enum constants; the Node test
 // stand-in canvas returns a proxy whose properties are all functions.
-function tryWebGLContext(canvas) {
+function tryWebGLContext(canvas, antialias) {
     try {
-        const gl = canvas.getContext('webgl2', { antialias: true, alpha: false })
-            || canvas.getContext('webgl', { antialias: true, alpha: false });
+        const gl = canvas.getContext('webgl2', { antialias, alpha: false })
+            || canvas.getContext('webgl', { antialias, alpha: false });
         if (!gl || typeof gl.getParameter !== 'function') return null;
         if (typeof gl.VERSION !== 'number' || typeof gl.TRIANGLES !== 'number') return null;
         const version = gl.getParameter(gl.VERSION);
@@ -185,10 +225,8 @@ export class Renderer {
 
         // Cars catch narrow highlights. People, roofs and street furniture
         // share softer vertex lighting and the same low directional sun.
-        this.lambert = new THREE.MeshLambertMaterial({ vertexColors: true });
+        this.masonry = new THREE.MeshStandardMaterial({ vertexColors:true,roughness:.9,envMapIntensity:.30 });
         this.basic = new THREE.MeshBasicMaterial({ vertexColors: true });
-        this.flashMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-        this.paint=new THREE.MeshPhongMaterial({vertexColors:true,specular:0x8d7a8a,shininess:42});
         this.bulletMat = new THREE.MeshBasicMaterial({ color: 0xffd76a });
         this.shadowMat = new THREE.MeshBasicMaterial({
             color: 0x311f3e, transparent: true, opacity: 0.29, depthWrite: false
@@ -208,7 +246,7 @@ export class Renderer {
         this.water = null;
         this.sun = null;
 
-        const gl = tryWebGLContext(canvas);
+        const gl = tryWebGLContext(canvas,this._shotMode);
         this.renderer = null;
         this.scene = null;
         this.camera = null;
@@ -219,27 +257,37 @@ export class Renderer {
                 });
                 this.renderer.setPixelRatio(
                     Math.min((typeof window !== 'undefined' && window.devicePixelRatio) || 1, 1.5));
+                this.renderer.toneMapping=THREE.ACESFilmicToneMapping;
+                this.renderer.toneMappingExposure=.94;
+                this.renderer.outputColorSpace=THREE.SRGBColorSpace;
                 this.scene = new THREE.Scene();
+                const pmrem=new THREE.PMREMGenerator(this.renderer), room=new RoomEnvironment(this.renderer);
+                this.environment=pmrem.fromScene(room,.04);
+                this.scene.environment=this.environment.texture;
+                room.dispose();pmrem.dispose();
                 this.scene.background = new THREE.Color(P.sky);
-                this.scene.fog=new THREE.Fog(0xe9aca7,480,2700);
-                this.camera = new THREE.PerspectiveCamera(FOV, 1280 / 800, .8, 9000);
-                this.hemi = new THREE.HemisphereLight(0xffd8df, 0xb7adba, 1.72);
+                this.scene.fog=new THREE.Fog(0xff995e,330,1850);
+                this.camera = new THREE.PerspectiveCamera(FOV, 1280 / 800, .8, 2400);
+                this.hemi = new THREE.HemisphereLight(0xf4cbd9, 0x514863, .88);
                 this.scene.add(this.hemi);
-                this.dir = new THREE.DirectionalLight(0xffcd98, 2.1);
+                this.dir = new THREE.DirectionalLight(0xffd59e, 2.35);
                 this.scene.add(this.dir,this.dir.target);
                 this.renderer.shadowMap.enabled=true;
                 this.renderer.shadowMap.type=THREE.PCFShadowMap;
                 this.dir.castShadow=true;
-                this.dir.shadow.mapSize.set(1024,1024);
-                Object.assign(this.dir.shadow.camera,{left:-350,right:350,top:350,bottom:-350,near:1,far:1600});
+                this.dir.shadow.mapSize.set(2048,2048);
+                this.dir.shadow.autoUpdate=false;
+                this.shadowTime=NaN;
+                Object.assign(this.dir.shadow.camera,{left:-160,right:160,top:160,bottom:-160,near:5,far:560});
                 this.dir.shadow.camera.updateProjectionMatrix();
-                this.dir.shadow.bias=-.00045;
-                this.dir.shadow.normalBias=.7;
-                const rim=new THREE.DirectionalLight(0xffb6d4,.72);
+                this.dir.shadow.bias=-.0004;
+                this.dir.shadow.normalBias=.15;
+                const rim=new THREE.DirectionalLight(0xa1b5de,.38);
                 rim.position.set(-.8,.35,.35); this.scene.add(rim);
                 this.noise=weatherTexture(); this.sky=makeSky(this.noise); this.scene.add(this.sky);
                 this._buildDynamicPools();
-            } catch {
+            } catch (error) {
+                console.error("Unable to initialize the city renderer",error);
                 this.renderer = null;
                 this.scene = null;
                 this.camera = null;
@@ -258,6 +306,7 @@ export class Renderer {
         this._tmpColor = new THREE.Color();
         this._tmpMatrix = new THREE.Matrix4();
         this._tmpVec = new THREE.Vector3();
+        this.viewFrustum=new THREE.Frustum();
 
         this.setWorld(world);
         this.resize();
@@ -328,6 +377,7 @@ export class Renderer {
         g.addColorStop(0,'#ffffff'); g.addColorStop(.18,'#ffffffb0'); g.addColorStop(1,'#ffffff00');
         ctx.fillStyle=g;ctx.fillRect(0,0,96,96);
         const glowMap=new THREE.CanvasTexture(c);
+        this.shadowMat.map=glowMap;this.shadowMat.opacity=.41;
         const glowMat=new THREE.MeshBasicMaterial({map:glowMap,transparent:true,depthWrite:false,
             blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
         this.glows=new THREE.InstancedMesh(new THREE.PlaneGeometry(1,1),glowMat,900);
@@ -387,12 +437,17 @@ export class Renderer {
         // Drop every dynamic mesh: the new game owns new actor objects.
         for (const map of [this.carMeshes, this.pedMeshes, this.enemyMeshes,
             this.officerMeshes, this.bulletMeshes, this.pickupMeshes]) {
-            for (const mesh of map.values()) this.scene?.remove(mesh);
+            for (const mesh of map.values()){
+                mesh.userData.mesh?.skeleton?.dispose();
+                this.scene?.remove(mesh);
+            }
             map.clear();
         }
         this.camInit=false;
+        this.shadowTime=NaN;
         if(sameCity && this.staticGroup) return;
         if (this.playerMesh) {
+            this.playerMesh.userData.mesh.skeleton.dispose();
             this.scene?.remove(this.playerMesh);
             this.playerMesh = null;
         }
@@ -402,34 +457,47 @@ export class Renderer {
             const geometries=new Set(), materials=new Set();
             this.staticGroup.traverse(o=>{
                 if(o.geometry) geometries.add(o.geometry);
-                if(o.material && o.material!==this.lambert && o.material!==this.basic) materials.add(o.material);
+                if(o.material && o.material!==this.masonry && o.material!==this.basic) materials.add(o.material);
             });
             for(const g of geometries) g.dispose();
             for(const m of materials){m.map?.dispose();m.emissiveMap?.dispose();m.dispose();}
             this.staticGroup = null;
         }
         this.staticGroup = new THREE.Group();
-        const {walls,rest,ground,road,glow,atlas,windows}=buildCityGeometry(world);
-        this.facadeMaterial=new THREE.MeshLambertMaterial({map:atlas,emissiveMap:windows,emissive:0xffdbad});
-        for(const [blocks,mat] of [[walls,this.facadeMaterial],[rest,this.lambert]]) {
-            for(const geo of blocks) {
-                const block=new THREE.Mesh(geo,mat);
-                block.castShadow=block.receiveShadow=true;
-                this.staticGroup.add(block);
+        this.detailBlocks=[];
+        this.lamps=world.props.filter(p=>p.kind==='lamp');
+        const {walls,rest,ground,road,paving,glow,atlas,windows}=buildCityGeometry(world);
+        this.facadeMaterial=new THREE.MeshStandardMaterial({roughness:.86,envMapIntensity:.32,map:atlas,emissiveMap:windows,emissive:0xffdbad});
+        for(const geo of walls){
+            const block=new THREE.Mesh(geo,this.facadeMaterial);
+            block.castShadow=block.receiveShadow=true;this.staticGroup.add(block);
+        }
+        for(const [blocks,material] of [[rest,this.masonry],[glow,this.basic]]){
+            for(const {near,far,center} of blocks){
+                const detail=new THREE.Mesh(near,material);
+                detail.castShadow=detail.receiveShadow=material===this.masonry;
+                const outline=far?new THREE.Mesh(far,material):null;
+                this.staticGroup.add(detail);if(outline)this.staticGroup.add(outline);
+                near.computeBoundingBox();
+                if(far)far.computeBoundingBox();
+                this.detailBlocks.push({detail,outline,center});
             }
         }
-        const pavement=new THREE.Mesh(ground,this.lambert); pavement.receiveShadow=true;
-        const asphalt=new THREE.Mesh(road,roadMaterial());
+        const pavement=new THREE.Mesh(ground,this.masonry); pavement.receiveShadow=true;
+        const slabs=new THREE.Mesh(paving,streetMaterial(true));slabs.receiveShadow=true;
+        const asphalt=new THREE.Mesh(road,streetMaterial());
         asphalt.receiveShadow=true;
-        this.staticGroup.add(buildPalms(world,this.lambert),pavement,asphalt,new THREE.Mesh(glow,this.basic));
+        const palms=buildPalms(world,this.masonry);
+        this.palms=palms;
+        this.staticGroup.add(palms,pavement,slabs,asphalt);
         for (const sign of buildSigns(world)) this.staticGroup.add(sign);
         this.water=makeWater(world,this.noise);
         this.staticGroup.add(this.water);
         this.scene.add(this.staticGroup);
         // Player mesh (fixed colours) is built once per world.
-        this.playerMesh = new THREE.Mesh(personGeometry({
+        this.playerMesh = buildPersonRig({
             player:true, jacket: P.jacket, skin: '#C48A62', hair: P.ink, trousers: P.trousers
-        }), this.lambert);
+        });
         this.playerMesh.castShadow=true;
         this.scene.add(this.playerMesh);
         this.camInit = false;
@@ -446,8 +514,8 @@ export class Renderer {
             // The drawing buffer may render below the CSS size (see
             // setRenderScale): the browser upscales it, the HUD stays crisp.
             this.renderer.setSize(
-                Math.max(320, Math.round(w * this.renderScale)),
-                Math.max(240, Math.round(h * this.renderScale)), false);
+                Math.max(1, Math.round(w * this.renderScale)),
+                Math.max(1, Math.round(h * this.renderScale)), false);
         }
         if (this.camera) {
             this.camera.aspect = w / h;
@@ -478,9 +546,9 @@ export class Renderer {
         const rc = new THREE.Raycaster();
         rc.setFromCamera(ndc, this.camera);
         const o = rc.ray.origin, d = rc.ray.direction;
-        if (Math.abs(d.y) < 1e-6) return { x: p.x, y: p.y };
-        const t = -o.y / d.y;
-        if (t <= 0) return { x: p.x, y: p.y };
+        // Above the horizon the aim ray never reaches the ground. Its
+        // horizontal direction still describes a valid distant target.
+        const t=d.y<-.0001?Math.min(2000,-o.y/d.y):2000;
         return { x: o.x + d.x * t, y: o.z + d.z * t };
     }
 
@@ -528,13 +596,43 @@ export class Renderer {
         this.water.material.uniforms.time.value=game.time;
         this.water.material.uniforms.dusk.value=d;
         this.facadeMaterial.emissiveIntensity=clamp((d-.24)*1.45,0,.9);
-        this.dir.intensity=lerp(2.15,1.75,d);
-        const {x,z}=this.camera.position;
-        this.dir.position.set(x+40,340,z-780);
-        this.dir.target.position.set(x,0,z);
+        const u=this.sky.material.uniforms;
+        this.scene.fog.color.copy(u.horizon.value).lerp(u.ember.value,d);
+        const nt=clamp((d-.76)/.24,0,1);
+        this.scene.fog.color.lerp(this._tmpColor.setRGB(.026,.036,.085),nt*nt*(3-2*nt)*.95);
+        this.hemi.intensity=lerp(.88,.40,nt);
+        this.dir.color.set(nt>.6?0xb7c8ef:0xffd59e);
+        this.dir.intensity=lerp(2.65,1.85,d)*(1-nt*.75);
+        const {x,y}=game.player;
+        // Keep the map at least as sharp as the colour buffer. At native
+        // resolution (including captures) the sun still has its full 2K map.
+        const shadow=this.dir.shadow;
+        const size=this.renderScale>.65?2048:this.renderScale>.32?1024:512;
+        const extent=game.player.car || game.camera.photo ? 160 : 144;
+        if(shadow.mapSize.x!==size || shadow.camera.right!==extent){
+            if(shadow.mapSize.x!==size){
+                shadow.map?.dispose();
+                shadow.map=null;
+                shadow.mapSize.set(size,size);
+            }
+            Object.assign(shadow.camera,{left:-extent,right:extent,top:extent,bottom:-extent});
+            shadow.camera.updateProjectionMatrix();
+            this.shadowTime=NaN;
+        }
+        const texel=2*extent/size;
+        const cx=Math.round(x/texel)*texel, cz=Math.round(y/texel)*texel;
+        if(this.shadowTime!==game.time || this.dir.target.position.x!==cx || this.dir.target.position.z!==cz){
+            this.dir.position.set(cx-68,165,cz-275);
+            this.dir.target.position.set(cx,0,cz);
+            shadow.needsUpdate=true;
+            this.shadowTime=game.time;
+        }
     }
 
     _updateCamera(game, dt) {
+        if(game.mode==='title' || game.camera.photo){
+            if(this.camera.fov!==FOV){this.camera.fov=FOV;this.camera.updateProjectionMatrix();}
+        }
         if(game.mode==='title') {
             const t=this.reducedMotion?0:game.time;
             const a=Math.sin(t*.065);
@@ -551,28 +649,48 @@ export class Renderer {
         const car = p.car;
         const yaw = game.camera.yaw ?? p.h;
         const zoomScale = clamp(1.15 / (game.camera.zoom || 1.15), 0.8, 1.5);
-        const speed = car ? Math.abs(car.speed) : 0;
+        const speed = car ? Math.abs(car.speed) : p.gait.speed;
         const speedBoost = 1 + Math.min(speed / 400, 0.25) * 0.35;
-        const dist = (car ? CAR_DIST : FOOT_DIST) * zoomScale * speedBoost;
-        const height = (car ? CAR_HEIGHT : FOOT_HEIGHT) * zoomScale;
+        let dist = car ? CAR_DIST*zoomScale*speedBoost : gearValue(speed,'distance')*zoomScale;
+        const height=(car?CAR_HEIGHT:gearValue(speed,'height'))*zoomScale+(p.z||0)*.34;
+        const fov=car?FOV:gearValue(speed,'fov');
+        this.camera.fov=lerp(this.camera.fov,fov,1-Math.exp(-dt/.4));
+        this.camera.updateProjectionMatrix();
         const fx = Math.cos(yaw), fz = Math.sin(yaw);
+        while(!car && dist>40 && isSolid(game.world,p.x-fx*dist,p.y-fz*dist,2)) dist=Math.max(40,dist-5);
         this._tmpVec.set(p.x - fx * dist, height, p.y - fz * dist);
         if (!this.camInit || !this.camPos) {
             this.camPos = this._tmpVec.clone();
             this.camInit = true;
         } else {
-            const k = 1 - Math.exp(-6 * dt);
+            const k = 1 - Math.exp(-(car?6:gearValue(speed,'follow'))*dt);
             this.camPos.lerp(this._tmpVec, k);
         }
         // Screen shake rides on top of the smoothed position.
         const shake = game.shake || 0;
         const sx = shake ? Math.sin(game.time * 191) * .5 * shake * 1.4 : 0;
         const sy = shake ? Math.sin(game.time * 143 + 2) * .5 * shake * 1.4 : 0;
-        this.camera.position.set(this.camPos.x + sx, this.camPos.y + sy, this.camPos.z);
-        this.camera.lookAt(p.x + fx * LOOK_AHEAD, LOOK_HEIGHT, p.y + fz * LOOK_AHEAD);
+        const kick=car||this.reducedMotion?0:.6*clamp((speed-107)/65,0,1)*Math.sin(game.time*Math.PI*26);
+        this.camera.position.set(this.camPos.x+sx,Math.max(6,this.camPos.y+sy+kick),this.camPos.z);
+        const ahead=car?LOOK_AHEAD:gearValue(speed,'ahead');
+        this.camera.lookAt(p.x+fx*ahead,LOOK_HEIGHT+(p.z||0)*.46,p.y+fz*ahead);
+        if(!car && !this.reducedMotion)this.camera.rotateZ(-p.gait.bank*.18);
     }
 
     _syncWorld(game) {
+        this.camera.updateMatrixWorld();
+        this.dir.updateMatrixWorld();
+        this.dir.target.updateMatrixWorld();
+        this.dir.shadow.updateMatrices(this.dir);
+        const sun=this.dir.shadow.getFrustum(), view=this.viewFrustum;
+        view.setFromProjectionMatrix(this._tmpMatrix.multiplyMatrices(this.camera.projectionMatrix,this.camera.matrixWorldInverse));
+        this.palms.userData.update(this.camera.position,this.renderScale,view,sun);
+        for(const {detail,outline,center} of this.detailBlocks){
+            const d=center.distanceToSquared(this.camera.position);
+            const bounds=detail.geometry.boundingBox;
+            detail.visible=d<570**2 && (view.intersectsBox(bounds) || (detail.castShadow && sun.intersectsBox(bounds)));
+            if(outline)outline.visible=d>=570**2 && d<2300**2 && view.intersectsBox(outline.geometry.boundingBox);
+        }
         this._syncCars(game);
         this._syncPeople(this.pedMeshes, game.peds, ped => ({
             jacket: ped.jacket, skin: ped.skin, hair: ped.hair, trousers: ped.trousers
@@ -600,19 +718,16 @@ export class Renderer {
         for (const car of game.cars) {
             seen.add(car);
             let mesh = this.carMeshes.get(car);
+            const range=Math.hypot(car.x-this.camera.position.x,car.y-this.camera.position.z);
+            if(range>1400){if(mesh)mesh.visible=false;continue;}
             if (!mesh) {
-                mesh = new THREE.Mesh(carGeometry(car.type, car.color), this.paint);
-                mesh.add(carLettering(car.type));
-                mesh.castShadow=mesh.receiveShadow=true;
+                mesh = buildCar(car.type,car.color);
                 this.scene.add(mesh);
                 this.carMeshes.set(car, mesh);
             }
-            if(mesh.userData.paint!==car.color) {
-                mesh.geometry=carGeometry(car.type,car.color); mesh.userData.paint=car.color;
-            }
             mesh.position.set(car.x, car.wreck ? -2 : 0, car.y);
             mesh.rotation.set(0, yawFor(car.h), car.wreck ? 0.05 : 0);
-            mesh.children[0].visible=Math.hypot(car.x-this.camera.position.x,car.y-this.camera.position.z)<340;
+            poseCar(mesh,car,range/this.renderScale,car===game.player.car);
             mesh.visible = true;
         }
         for (const [car, mesh] of this.carMeshes) {
@@ -628,26 +743,25 @@ export class Renderer {
         for (const person of list) {
             seen.add(person);
             let mesh = map.get(person);
+            const range=Math.hypot(person.x-this.camera.position.x,person.y-this.camera.position.z);
+            if(range>1100){if(mesh)mesh.visible=false;continue;}
             if (!mesh) {
-                mesh = new THREE.Mesh(personGeometry(makeOpts(person)), this.lambert);
+                mesh = buildPersonRig({...makeOpts(person),style:person.id%3});
                 this.scene.add(mesh);
                 mesh.castShadow=true;
                 map.set(person, mesh);
             }
             if(person.inCab) {mesh.visible=false;continue;}
             const dead = person.dead;
-            animateStride(mesh,person.moving && !dead,game.time*8+person.id);
-            const bob = !dead && person.moving
-                ? Math.abs(Math.sin(game.time * 9 + (person.id || 0))) * 1.6 : 0;
-            mesh.position.set(person.x, dead ? 2 : bob, person.y);
-            mesh.rotation.order = 'YXZ';
-            if (dead) mesh.rotation.set(-Math.PI / 2 * 0.9, yawFor(person.h), 0);
-            else mesh.rotation.set(0, yawFor(person.h), 0);
-            mesh.material = person.flash > 0 ? this.flashMat : this.lambert;
+            poseRig(mesh,solvePose(person.gait||idleGait,person),range>270*this.renderScale,person.flash>0);
+            mesh.position.set(person.x,dead?2:0,person.y);
+            mesh.rotation.order='YXZ';
+            mesh.rotation.set(dead?-Math.PI*.45:0,yawFor(person.h),0);
             mesh.visible = true;
         }
         for (const [person, mesh] of map) {
             if (!seen.has(person)) {
+                mesh.userData.mesh.skeleton.dispose();
                 this.scene.remove(mesh);
                 map.delete(person);
             }
@@ -663,12 +777,10 @@ export class Renderer {
             return;
         }
         mesh.visible = true;
-        animateStride(mesh,p.moving,game.time*9);
-        const bob = p.moving ? Math.abs(Math.sin(game.time * 9)) * 1.6 : 0;
-        mesh.position.set(p.x, bob, p.y);
-        mesh.rotation.order = 'YXZ';
-        mesh.rotation.set(0, yawFor(p.h), 0);
-        mesh.material = p.flash > 0 ? this.flashMat : this.lambert;
+        poseRig(mesh,solvePose(p.gait,p));
+        mesh.position.set(p.x,p.z,p.y);
+        mesh.rotation.order='YXZ';
+        mesh.rotation.set(p.health<=0?-Math.PI*.45:0,yawFor(p.h),0);
     }
 
     _syncPickups(game) {
@@ -678,7 +790,7 @@ export class Renderer {
             seen.add(item);
             let mesh = this.pickupMeshes.get(item);
             if (!mesh) {
-                mesh = new THREE.Mesh(pickupGeometry(item.kind), this.lambert);
+                mesh = new THREE.Mesh(pickupGeometry(item.kind), this.masonry);
                 this.scene.add(mesh);
                 this.pickupMeshes.set(item, mesh);
             }
@@ -784,6 +896,11 @@ export class Renderer {
             a.updateMatrix(); mesh.setMatrixAt(n,a.matrix);
             mesh.setColorAt(n++,this._tmpColor.set(color));
         };
+        if(game.dusk>.22) for(const lamp of this.lamps){
+            if(Math.hypot(lamp.x-this.camera.position.x,lamp.y-this.camera.position.z)>510)continue;
+            put(lamp.x+6,29,lamp.y,9,7,'#ffc88c',false);
+            put(lamp.x+6,.46,lamp.y,30,24,'#624432',true);
+        }
         for(const c of game.cars){
             if(c.wreck || (c!==game.player.car && !c.driver) || Math.hypot(c.x-this.camera.position.x,c.y-this.camera.position.z)>600) continue;
             const def=CARS[c.type], fx=Math.cos(c.h),fz=Math.sin(c.h);
@@ -836,7 +953,7 @@ export class Renderer {
             return;
         }
         const reach = p.car ? 26 : 20;
-        const a = p.fireHeading || p.h;
+        const a = p.fireHeading ?? p.h;
         this.flashSprite.position.set(
             p.x + Math.cos(a) * reach, 10, p.y + Math.sin(a) * reach);
         this.flashSprite.material.opacity = clamp(p.flash / 0.09, 0, 1);
@@ -877,5 +994,5 @@ export function updateCamera(game, dt) {
     game.camera.y += (p.y - game.camera.y) * k;
     const target = p.car ? p.car.h : p.h;
     if (game.camera.yaw === undefined) game.camera.yaw = target;
-    game.camera.yaw = dampAngle(game.camera.yaw, target, 3.2, dt);
+    if(p.car || !p.armed)game.camera.yaw = dampAngle(game.camera.yaw, target, p.car?3.2:gearValue(p.gait.speed,'yaw'), dt);
 }

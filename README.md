@@ -8,8 +8,19 @@ police, run missions across a sun-soaked coastal city. Built by an AI agent for
 make.fun's 'Make GTA 6' bounty, $1,666 in USDC.
 
 ## How to play
-Run `node serve.ts` and open http://localhost:8080 in a desktop browser. Controls: WASD/arrows move/drive, E enter/exit/steal car,
-Space shoot, F punch, Shift sprint, P pause, M mute.
+Run `node serve.ts` and open http://localhost:8080 in a desktop browser.
+
+| Action | Control |
+| --- | --- |
+| Jog or drive | WASD or arrow keys |
+| Walk | Hold Ctrl while moving |
+| Sprint | Hold Shift while moving. Jax passes through a run as he accelerates. |
+| Jump | Space |
+| Aim and strafe | Hold the right mouse button |
+| Attack | Left-click once per shot. When facing someone within reach, an unaimed click throws a punch. F also punches. |
+| Enter or exit a car | E |
+| Handbrake | Shift while driving |
+| Map, pause, mute | Tab, P or Escape, M |
 
 Rosa’s Jobs is available from the title and pause menus. Complete five jobs in order,
 from a timed delivery to an armoured van heist. Enter or Space begins a briefing and
