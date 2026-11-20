@@ -19,3 +19,24 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+Three.js r160 addons
+GLTFLoader, DRACOLoader, SkeletonUtils and BufferGeometryUtils are by the
+three.js authors and contributors. The MIT notice above covers these addons.
+
+Quaternius casual female character and embedded animation
+Quaternius released the source artwork under the CC0 1.0 Universal public
+domain dedication. The game uses the skin, face, hair, belt, shirt and
+trousers together on the original skeleton. Neon Bay adds fitted canvas
+shoes and facial details and adjusts the proportions and mesh density.
+
+Adobe Mixamo character and animations
+Adobe supplies the Ch06 character and motion clips through Mixamo. Adobe's
+Mixamo FAQ permits royalty-free use in personal and commercial video games.
+These assets retain their Mixamo terms. The game's MIT grant covers its own
+code and artwork and grants no standalone rights to the Mixamo library.
+
+Draco glTF decoder
+Copyright The Draco Authors. Licensed under the Apache License, Version 2.0.
+The complete terms accompany the decoder in draco/LICENSE.txt. The bundled
+JavaScript uses local decoder bytes supplied by the game.

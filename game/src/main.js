@@ -14,6 +14,7 @@ import { makePolice, updatePolice, reportCrime } from './police.js';
 import { populateEnemies, updateCombat } from './combat.js';
 import { createMissionState, updateMissions, installMission, missionEvent, MISSIONS, isUnlocked, startMission, advanceDialogue, failMission } from './missions.js';
 import { readSave, writeSave } from './save.js';
+import { loadCharacters } from './characters.js';
 import { Renderer, updateCamera } from './render.js';
 import { CAPTURE_NAMES, createShot } from './shots.js';
 
@@ -24,11 +25,21 @@ const seed = Number.isFinite(Number(params.get('seed'))) && params.has('seed') ?
 const captureMode = CAPTURE_NAMES.includes(params.get('shot'));
 const input = new Input(canvas);
 const audio = new Audio(readSave()?.settings);
+window.__shotReady = false;
+window.__charactersReady = false;
+if (typeof WebGLRenderingContext !== 'undefined') {
+    try {
+        await loadCharacters();
+        window.__charactersReady = true;
+    } catch (error) {
+        screen.textContent = 'The character files could not be loaded. ' + error.message;
+        throw error;
+    }
+}
 let game = createGame(seed, readSave());
 let renderer = new Renderer(canvas, game.world);
 let shot = null;
 let shotPaints = 0;
-window.__shotReady = false;
 
 // --- the game object -------------------------------------------------------
 // Everything the simulation touches lives on this one object: the world,
@@ -168,6 +179,7 @@ export function updateGame(g, dt = 1 / 60) {
     }
     if (g.time - g.lastSave > 15) g.save();
     missionEvent(g, 'tick', { dt });
+    if (g === game) renderer.advanceCharacters(g, dt);
 }
 
 // --- starting, recovering, launching jobs ----------------------------------
@@ -515,9 +527,14 @@ function frame(now) {
         }
     } else if (game.mode === 'title') {
         // The title is a live view of the same city, with actual traffic and pedestrians.
-        game.time += elapsed;
-        updateVehicles(game, elapsed);
-        updatePeds(game, elapsed);
+        accumulator += elapsed;
+        while (accumulator >= 1/60) {
+            game.time += 1/60;
+            updateVehicles(game, 1/60);
+            updatePeds(game, 1/60);
+            renderer.advanceCharacters(game, 1/60);
+            accumulator -= 1/60;
+        }
     }
     if (game.mode !== 'play') input.endFrame();
     audio.update(game, elapsed, game.mode === 'play' && !game.mapOpen && !shot);

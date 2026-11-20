@@ -13,8 +13,13 @@ const JACKETS = ['#0E7C86', '#C46B4A', '#7C9F87', '#E7746F', '#F0B429', '#243056
 const TROUSERS = ['#2C3138', '#5A4A3A', '#3A4A5A', '#6B5A4A'];
 
 // Appearance is derived from the stable walker ID and consumes no route or outfit RNG.
-export function civilianLook(id){
-    return {style:id%5,openJacket:Math.floor(id/3)%3===0};
+export function civilianLook(id) {
+    const index = Math.floor(Math.max(0,id-2000)/2);
+    const variants = id%2===0 ? 6 : JACKETS.length;
+    const suit = index%variants;
+    const group = Math.floor(index/variants);
+    return {jacket:JACKETS[suit], skin:SKINS[(suit*3+group)%SKINS.length],
+        trousers:TROUSERS[(suit+Math.floor(group/SKINS.length))%TROUSERS.length]};
 }
 
 // --- construction ----------------------------------------------------------

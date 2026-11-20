@@ -48,7 +48,10 @@ the city's clock. Each camera holds its final frame at native resolution.
 ## Run
 
 `node --test tests/core.test.mjs` exercises the fixed-step game, the character
-rigs, wheel stance and seeded street layout. `node main.ts` writes the static
+rigs, wheel stance and seeded street layout. Jax uses a decimated Mixamo
+character with nine motion clips. The crowd also uses a Quaternius rig with
+17 clips. Both load from the static game package. Asset credits are in
+[the third-party notices](game/vendor/THREE-LICENSE.txt). `node main.ts` writes the static
 game, screenshots and scoring dossier to `/output`. Set `MAKEFUN_OUTPUT_DIR`
 to choose a local package directory.
 

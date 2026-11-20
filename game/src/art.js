@@ -3,7 +3,7 @@
 // surfaces up close; more distant traffic shares baked silhouettes.
 // The canvas helpers below also paint the HUD.
 import * as THREE from './../vendor/three.module.min.js';
-import { RoundedBoxGeometry } from '../vendor/RoundedBoxGeometry.js';
+import { getRoundedBoxGeometry } from '../vendor/RoundedBoxGeometry.js';
 import { createRandom } from './random.js';
 import { PALETTE as P, CARS, WORLD, ROADS_X, ROADS_Y } from './config.js';
 
@@ -66,37 +66,24 @@ export function polygon(ctx, points, fill, stroke) {
 //
 const _color = new THREE.Color();
 
+function bakingBox(w,h,d,segments,radius) {
+    const template=getRoundedBoxGeometry(w,h,d,segments,radius);
+    // BufferGeometry.clone invokes the derived constructor before copying.
+    // A baking copy only needs the existing indexed attributes and UVs.
+    const geometry=new THREE.BufferGeometry().copy(template);
+    geometry.type=template.type;
+    return geometry;
+}
+
 function boxPart(w, h, d, x, y, z, color, ry = 0) {
-    const geo = new THREE.BoxGeometry(w, h, d);
+    const geo = bakingBox(w,h,d,0,0);
     if (ry) geo.rotateY(ry);
     geo.translate(x, y, z);
     return { geo, color };
 }
 
-const roundedShapes=new Map();
-function indexedRoundedBox(w,h,d,segments,radius) {
-    const shape=new RoundedBoxGeometry(w,h,d,segments,radius);
-    if(shape.index) return shape;
-    // r160 expands a BoxGeometry grid before rounding each corner in place.
-    // Recover its original index. Each face keeps a separate grid for its UVs.
-    const divisions=2*segments+1;
-    const grid=new THREE.BoxGeometry(1,1,1,divisions,divisions,divisions);
-    for(const [name,a] of Object.entries(shape.attributes)) {
-        const packed=new Float32Array(grid.attributes.position.count*a.itemSize);
-        for(let i=0;i<a.count;i++) {
-            const offset=grid.index.array[i]*a.itemSize;
-            for(let k=0;k<a.itemSize;k++) packed[offset+k]=a.array[i*a.itemSize+k];
-        }
-        shape.setAttribute(name,new THREE.BufferAttribute(packed,a.itemSize));
-    }
-    shape.setIndex(grid.index);
-    return shape;
-}
-
 function roundedPart(w,h,d,x,y,z,color,radius=Math.min(w,h,d)*.14,segments=1,ry=0) {
-    const key=[w,h,d,radius,segments].join('/');
-    if(!roundedShapes.has(key)) roundedShapes.set(key,indexedRoundedBox(w,h,d,segments,radius));
-    const geo=roundedShapes.get(key).clone();
+    const geo=bakingBox(w,h,d,segments,radius);
     if(ry) geo.rotateY(ry);
     geo.translate(x,y,z);
     return {geo,color};
@@ -190,7 +177,7 @@ function mergeBlocks(parts, lod=false) {
         for(const part of group){
             const bounds=part.geo.boundingBox, sz=bounds.getSize(new THREE.Vector3());
             if(Math.max(sz.x,sz.y,sz.z)<18)continue;
-            if(part.geo instanceof RoundedBoxGeometry){
+            if(part.geo.userData.roundedBox){
                 const mid=bounds.getCenter(new THREE.Vector3());
                 far.push(boxPart(sz.x,sz.y,sz.z,mid.x,mid.y,mid.z,part.color));
             }else far.push(part);
@@ -224,11 +211,12 @@ export function cityBatch(blocks, material, castShadow, level='all'){
     mesh.frustumCulled=false;mesh.castShadow=castShadow;mesh.receiveShadow=castShadow;
     mesh.onBeforeShadow=()=>geometry.setDrawRange(visible,casters);
     mesh.onAfterShadow=()=>geometry.setDrawRange(0,visible);
-    mesh.userData.update=(eye,view,sun,occlusion)=>{
+    mesh.userData.update=(eye,view,sun,occlusion,scale=1)=>{
+        const nearLimit=Math.max(150,570*scale)**2;
         let changed=false;
         for(const cell of cells){
             const d=cell.center?eye.distanceToSquared(cell.center):0;
-            const active=level==='all'||(level==='near'?d<570**2:d>=570**2 && d<2300**2);
+            const active=level==='all'||(level==='near'?d<nearLimit:d>=nearLimit && d<2300**2);
             const {mid,half}=cell;
             const camera=active && view.intersectsBox(cell.box) && !occlusion.hides(mid.x,mid.y,mid.z,half.x,half.y,half.z);
             const mask=active?(Number(camera) |
@@ -1197,7 +1185,7 @@ function carParts(type,color) {
         const box=part.geo.boundingBox,sz=box.getSize(new THREE.Vector3()),pt=box.getCenter(new THREE.Vector3());
         if(part.geo.type==='RingGeometry')continue;
         if(Math.max(sz.x,sz.y,sz.z)<3.2)continue;
-        if(part.geo instanceof RoundedBoxGeometry)distantParts.push(boxPart(sz.x,sz.y,sz.z,pt.x,pt.y,pt.z,part.color));
+        if(part.geo.userData.roundedBox)distantParts.push(boxPart(sz.x,sz.y,sz.z,pt.x,pt.y,pt.z,part.color));
         else if(part.geo.type==='CylinderGeometry'){
             // Retain raked pillars and the long belt line but use four sides at this LOD.
             const attr=part.geo.attributes.position,n=part.geo.parameters.radialSegments;
@@ -1269,6 +1257,12 @@ export function trafficBatch(type,level,capacity){
     const mesh=new THREE.InstancedMesh(geo,trafficMaterial,capacity);
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     mesh.count=0;mesh.frustumCulled=false;mesh.castShadow=mesh.receiveShadow=true;
+    mesh.userData.shadowOnly=0;
+    mesh.onBeforeShadow=()=>{
+        mesh.userData.drawn=mesh.count;
+        mesh.count+=mesh.userData.shadowOnly;
+    };
+    mesh.onAfterShadow=()=>{mesh.count=mesh.userData.drawn;};
     return mesh;
 }
 

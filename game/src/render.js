@@ -21,14 +21,11 @@ import {
     buildCityGeometry, buildPalms, buildSigns, buildCar, poseCar, trafficBatch, cityBatch, streetSignals, curbPuddles,
     pickupGeometry, makeBeacon, yawFor
 } from './art.js';
-import {buildPersonRig,poseRig} from './rig.js';
-import {solvePose,makeGait} from './locomotion.js';
-import {civilianLook} from './pedestrians.js';
+import { createCharacter, poseCharacter, placeCharacter, disposeCharacter } from './characters.js';
 import {isSolid,signalPhase} from './world.js';
 import { makeMap, drawHUD, drawFullMap } from './hud.js';
 
 const FOV = 55;
-const idleGait = makeGait();
 const CAR_DIST = 109, CAR_HEIGHT = 37;
 const LOOK_AHEAD = 30, LOOK_HEIGHT = 14;
 const MAX_PARTICLES = 500;
@@ -513,21 +510,22 @@ export class Renderer {
         for (const map of [this.carMeshes, this.pedMeshes, this.enemyMeshes,
             this.officerMeshes, this.bulletMeshes, this.pickupMeshes]) {
             for (const mesh of map.values()){
-                mesh.userData.mesh?.skeleton?.dispose();
+                if (mesh.userData.mixer) disposeCharacter(mesh);
                 mesh.userData.wheelSet?.dispose();
                 this.scene?.remove(mesh);
             }
             map.clear();
         }
         this.camInit=false;
+        this.hudStamp=null;
         this.shadowTime=NaN;
-        if(sameCity && this.staticGroup) return;
         if (this.playerMesh) {
-            this.playerMesh.userData.mesh.skeleton.dispose();
-            this.scene?.remove(this.playerMesh);
+            disposeCharacter(this.playerMesh);
+            this.scene.remove(this.playerMesh);
             this.playerMesh = null;
         }
         if (!this.scene) return;
+        if (sameCity && this.staticGroup) return;
         if (this.staticGroup) {
             this.scene.remove(this.staticGroup);
             const geometries=new Set(), materials=new Set();
@@ -538,6 +536,8 @@ export class Renderer {
             });
             for(const g of geometries) g.dispose();
             for(const m of materials){m.map?.dispose();m.emissiveMap?.dispose();m.dispose();}
+            this.facadeDiffuse?.dispose();
+            this.facadeMaterial?.dispose();
             this.staticGroup = null;
         }
         this.staticGroup = new THREE.Group();
@@ -545,16 +545,23 @@ export class Renderer {
         this.lamps=world.props.filter(p=>p.kind==='lamp');
         const {walls,rest,ground,road,paving,glow,atlas,windows}=buildCityGeometry(world);
         this.facadeMaterial=new THREE.MeshStandardMaterial({roughness:.86,envMapIntensity:.32,map:atlas,emissiveMap:windows,emissive:0xffdbad});
-        this.detailBlocks.push(cityBatch(walls,this.facadeMaterial,true));
+        this.facades=cityBatch(walls,this.facadeMaterial,true);
+        this.detailBlocks.push(this.facades);
+        this.facadeDiffuse=new THREE.MeshLambertMaterial({map:atlas,emissiveMap:windows,emissive:0xffdbad});
         for(const [blocks,material] of [[rest,this.masonry],[glow,this.basic]]){
             this.detailBlocks.push(cityBatch(blocks,material,material===this.masonry,'near'),
                 cityBatch(blocks,material,false,'far'));
         }
         this.staticGroup.add(...this.detailBlocks);
         const pavement=new THREE.Mesh(ground,this.masonry); pavement.receiveShadow=true;
+        // Fill the depth buffer with solid walls and street furniture first.
+        // The expensive road texture and the ground underneath then shade
+        // only pixels left uncovered by opaque geometry.
+        pavement.renderOrder=5;
         const slabs=new THREE.Mesh(paving,streetMaterial(true));slabs.receiveShadow=true;
         const asphalt=new THREE.Mesh(road,streetMaterial());
         asphalt.receiveShadow=true;
+        slabs.renderOrder=asphalt.renderOrder=4;
         const palms=buildPalms(world,this.masonry);
         this.palms=palms;
         const signals=streetSignals(world,this.masonry);this.signalLights=signals.lights;this.signals=signals.mesh;
@@ -562,14 +569,11 @@ export class Renderer {
         this.neon=[];
         for (const sign of buildSigns(world,this.neon)){this.staticGroup.add(sign);this.detailBlocks.push(sign);}
         this.water=makeWater(world,this.noise);
+        this.water.renderOrder=6;
         this.staticGroup.add(this.water);
         this.scene.add(this.staticGroup);
-        // Player mesh (fixed colours) is built once per world.
-        this.playerMesh = buildPersonRig({
-            player:true, jacket: P.jacket, skin: '#C48A62', hair: P.ink, trousers: P.trousers
-        });
-        this.playerMesh.castShadow=true;
-        this.scene.add(this.playerMesh);
+        const diner = world.services.find(service => service.id === 'diner');
+        this.rosa = {id:17, x:diner.x+5, y:diner.y, h:.23, jacket:P.jacket, skin:'#8d5a3c', hair:'#432e2d'};
         this.camInit = false;
     }
 
@@ -592,6 +596,7 @@ export class Renderer {
             this.camera.updateProjectionMatrix();
         }
         if (this.hudCanvas) {
+            this.hudStamp=null;
             this.hudCanvas.width = w;
             this.hudCanvas.height = h;
         }
@@ -665,7 +670,10 @@ export class Renderer {
         this.sky.material.uniforms.dusk.value=d;
         this.water.material.uniforms.time.value=game.time;
         this.water.material.uniforms.dusk.value=d;
-        this.facadeMaterial.emissiveIntensity=clamp((d-.24)*1.45,0,.9);
+        // At a sub-third-size buffer rough masonry highlights cover less
+        // than a pixel. Keep the facade atlas, lit windows and cast shadows.
+        this.facades.material=this.renderScale<=.32?this.facadeDiffuse:this.facadeMaterial;
+        this.facades.material.emissiveIntensity=clamp((d-.24)*1.45,0,.9);
         const u=this.sky.material.uniforms;
         this.scene.fog.color.copy(u.horizon.value).lerp(u.ember.value,d);
         const nt=clamp((d-.76)/.24,0,1);
@@ -758,19 +766,9 @@ export class Renderer {
         this.occlusion.update(this.world.buildings,this.camera.position);
         this.palms.userData.update(this.camera.position,this.renderScale,view,sun,this.occlusion);
         this.signals.userData.update(view,sun,this.occlusion);
-        for(const batch of this.detailBlocks)batch.userData.update(this.camera.position,view,sun,this.occlusion);
+        for(const batch of this.detailBlocks)batch.userData.update(this.camera.position,view,sun,this.occlusion,this.renderScale);
         this._syncCars(game);
-        this._syncPeople(this.pedMeshes, game.peds, ped => ({
-            ...civilianLook(ped.id), jacket: ped.jacket, skin: ped.skin, hair: ped.hair, trousers: ped.trousers
-        }), game);
-        this._syncPeople(this.enemyMeshes, game.enemies, e => ({
-            jacket: e.jacket, skin: e.skin, hair: e.hair, trousers: P.trousers
-        }), game);
-        this._syncPeople(this.officerMeshes, game.police.officers, o => ({
-            jacket: o.jacket, skin: o.skin, hair: o.hair,
-            trousers: P.trousers, officer: true
-        }), game);
-        this._syncPlayer(game);
+        this._syncCharacters(game);
         this._syncPickups(game);
         this._syncBullets(game);
         this._syncParticles(game);
@@ -784,7 +782,7 @@ export class Renderer {
     _syncCars(game) {
         const seen=this.seenActors;
         seen.clear();
-        for(const batch of this.trafficBatches.values())batch.count=0;
+        for(const batch of this.trafficBatches.values()){batch.count=0;batch.userData.shadowOnly=0;}
         const sun=this.dir.shadow.getFrustum(),eye=this.camera.position;
         for (const car of game.cars) {
             seen.add(car);
@@ -792,8 +790,9 @@ export class Renderer {
             const range=Math.hypot(car.x-eye.x,car.y-eye.z);
             const bounds=this.actorBounds;
             bounds.center.set(car.x,11,car.y);bounds.radius=CARS[car.type].length*.63;
-            if(range>1400 || (!sun.intersectsSphere(bounds) && (!this.viewFrustum.intersectsSphere(bounds) ||
-                this.occlusion.hides(car.x,12,car.y,bounds.radius,13,bounds.radius)))){
+            const visible=range<=1400 && this.viewFrustum.intersectsSphere(bounds) &&
+                !this.occlusion.hides(car.x,12,car.y,bounds.radius,13,bounds.radius);
+            if(range>1400 || (!visible && !sun.intersectsSphere(bounds))){
                 if(mesh)mesh.visible=false;
                 continue;
             }
@@ -810,7 +809,8 @@ export class Renderer {
                 const a=this.lightTransform;
                 a.position.set(car.x,car.wreck?-2:0,car.y);
                 a.rotation.set(0,-car.h,car.wreck?.05:0,'XYZ');a.scale.setScalar(1);a.updateMatrix();
-                batch.setMatrixAt(batch.count,a.matrix);batch.setColorAt(batch.count++,this._tmpColor.set(car.color));
+                const index=visible?batch.count++:batch.instanceMatrix.count-1-batch.userData.shadowOnly++;
+                batch.setMatrixAt(index,a.matrix);batch.setColorAt(index,this._tmpColor.set(car.color));
                 continue;
             }
             if (!mesh) {
@@ -824,7 +824,13 @@ export class Renderer {
             mesh.visible = true;
         }
         for(const batch of this.trafficBatches.values()){
-            batch.visible=batch.count>0;
+            const extra=batch.userData.shadowOnly;
+            if(extra){
+                const start=batch.instanceMatrix.count-extra;
+                batch.instanceMatrix.array.copyWithin(batch.count*16,start*16);
+                batch.instanceColor.array.copyWithin(batch.count*3,start*3);
+            }
+            batch.visible=batch.count+extra>0;
             if(batch.visible){batch.instanceMatrix.needsUpdate=true;batch.instanceColor.needsUpdate=true;}
         }
         for (const [car, mesh] of this.carMeshes) {
@@ -836,53 +842,55 @@ export class Renderer {
         }
     }
 
-    _syncPeople(map, list, makeOpts, game) {
-        const seen=this.seenActors;seen.clear();
-        for (const person of list) {
-            seen.add(person);
-            let mesh = map.get(person);
-            const range=Math.hypot(person.x-this.camera.position.x,person.y-this.camera.position.z);
-            const b=this.actorBounds;b.center.set(person.x,13,person.y);b.radius=22;
-            if(range>1100 || (!this.dir.shadow.getFrustum().intersectsSphere(b) &&
-                (!this.viewFrustum.intersectsSphere(b)||this.occlusion.hides(person.x,14,person.y,12,16,12)))){
-                if(mesh)mesh.visible=false;continue;
-            }
-            if (!mesh) {
-                mesh = buildPersonRig({style:person.id%3,...makeOpts(person)});
-                this.scene.add(mesh);
-                mesh.castShadow=true;
-                map.set(person, mesh);
-            }
-            if(person.inCab) {mesh.visible=false;continue;}
-            const dead = person.dead;
-            poseRig(mesh,solvePose(person.gait||idleGait,person),range>270*this.renderScale,person.flash>0);
-            mesh.position.set(person.x,dead?2:0,person.y);
-            mesh.rotation.order='YXZ';
-            mesh.rotation.set(dead?-Math.PI*.45:0,yawFor(person.h),0);
-            mesh.visible = true;
+    advanceCharacters(game, dt) {
+        if (!this.scene) return;
+        if (!this.playerMesh) {
+            this.playerMesh = createCharacter(game.player, 'jax');
+            this.scene.add(this.playerMesh);
         }
-        for (const [person, mesh] of map) {
-            if (!seen.has(person)) {
-                mesh.userData.mesh.skeleton.dispose();
+        poseCharacter(this.playerMesh,game.player,dt);
+        const update = (map, people, kind) => {
+            const seen = this.seenActors;
+            seen.clear();
+            const tick = (person, role) => {
+                seen.add(person);
+                let mesh = map.get(person);
+                if (!mesh) {
+                    mesh=createCharacter(person,role);
+                    map.set(person,mesh);
+                }
+                poseCharacter(mesh,person,dt);
+            };
+            for (const person of people) tick(person,kind);
+            if (kind==='civilian') tick(this.rosa,'rosa');
+            for (const [person,mesh] of map) if (!seen.has(person)) {
+                disposeCharacter(mesh);
                 this.scene.remove(mesh);
                 map.delete(person);
             }
-        }
+        };
+        update(this.pedMeshes,game.peds,'civilian');
+        update(this.enemyMeshes,game.enemies,'rival');
+        update(this.officerMeshes,game.police.officers,'officer');
     }
 
-    _syncPlayer(game) {
-        const p = game.player;
-        const mesh = this.playerMesh;
-        if (!mesh) return;
-        if (p.car) {
-            mesh.visible = false;
-            return;
+    _syncCharacters(game) {
+        if (!this.playerMesh) this.advanceCharacters(game,0);
+        const p=game.player;
+        this.playerMesh.visible=!p.car;
+        if (!p.car) placeCharacter(this.playerMesh,p);
+        const sun=this.dir.shadow.getFrustum(), eye=this.camera.position;
+        for (const map of [this.pedMeshes,this.enemyMeshes,this.officerMeshes]) for (const [actor,mesh] of map) {
+            const b=this.actorBounds;
+            b.center.set(actor.x,14,actor.y); b.radius=22;
+            const range=Math.hypot(actor.x-eye.x,actor.y-eye.z);
+            mesh.visible=!actor.inCab && range<1100 && (sun.intersectsSphere(b) ||
+                (this.viewFrustum.intersectsSphere(b) && !this.occlusion.hides(actor.x,14,actor.y,12,16,12)));
+            if (mesh.visible) {
+                if (!mesh.parent) this.scene.add(mesh);
+                placeCharacter(mesh,actor,range>260*this.renderScale);
+            } else if (mesh.parent) mesh.removeFromParent();
         }
-        mesh.visible = true;
-        poseRig(mesh,solvePose(p.gait,p));
-        mesh.position.set(p.x,p.z,p.y);
-        mesh.rotation.order='YXZ';
-        mesh.rotation.set(p.health<=0?-Math.PI*.45:0,yawFor(p.h),0);
     }
 
     _syncPickups(game) {
@@ -1092,6 +1100,15 @@ export class Renderer {
         if (!this._shotMode && !game.mapOpen && !(game.damageFlash > 0)) {
             if (++this._hudTick % 3 !== 0) return;
         }
+        // The overlay is independent of the chase camera. A repaint between
+        // simulation ticks can keep the current pixels. Menu interactions,
+        // map clicks and dialogue can change HUD state while the clock is held.
+        const stamp=[game.time,game.mode,game.mapOpen,game.damageFlash,game.player.cash,
+            game.player.ammo,game.player.health,game.player.car?.hp,game.mission.objective,
+            game.mission.dialogue?.lines?.length,game.mission.dialogue?.outro,
+            game.waypoint?.x,game.waypoint?.y,game.stats.reputation,game.toast?.title].join('|');
+        if (stamp===this.hudStamp) return;
+        this.hudStamp=stamp;
         ctx.clearRect(0, 0, this.width, this.height);
         if(game.mode==='title') return;
         if (game.mapOpen) drawFullMap(ctx, game, this);

@@ -3,6 +3,8 @@
 // and no network. The fakes below only swallow drawing and events; every
 // simulation under test is the production code.
 import test from 'node:test';
+import {gunzipSync} from 'node:zlib';
+import {readFileSync, readdirSync} from 'node:fs';
 import assert from 'node:assert/strict';
 
 const noop = () => {};
@@ -1024,68 +1026,124 @@ test('stamina exhaustion holds the jog cap until thirty percent recovery', () =>
     assert.equal(p.exhausted,false);assert.ok(p.speed>160);
 });
 
-test('the articulated player and crowd rigs pose independent joints and share outfit geometry', async () => {
-    const {buildPersonRig,poseRig}=await import('../game/src/rig.js');
-    const {makeGait,updateGait,solvePose}=await import('../game/src/locomotion.js');
-    const opts={player:true},model=buildPersonRig(opts),other=buildPersonRig(opts);
-    assert.equal(model.userData.mesh.geometry,other.userData.mesh.geometry);
-    assert.notEqual(model.userData.bones.kneeL,other.userData.bones.kneeL);
-    const gait=makeGait();
-    for(let i=0;i<120;i++)updateGait(gait,{speed:172,distance:172/60,turn:.6},1/60);
-    gait.phase=Math.PI*1.5;
-    const pose=solvePose(gait);poseRig(model,pose);
-    const b=model.userData.bones;
-    assert.ok(Math.abs(b.kneeL.rotation.z-b.kneeR.rotation.z)>1.4);
-    assert.ok(b.torso.rotation.z<-.2);
-    assert.ok(b.head.rotation.y<0);
-    assert.equal(b.kneeL.parent,b.thighL);
-    assert.equal(b.ankleR.parent,b.kneeR);
-    assert.ok(model.userData.mesh.geometry.attributes.position.array.every(Number.isFinite));
-    assert.equal(other.userData.bones.kneeL.rotation.z,0);
-    const crowd=buildPersonRig({officer:true}),seed=makeGait(3001);
-    poseRig(crowd,solvePose(seed,{armed:true}),true);
-    assert.equal(crowd.userData.gun.visible,true);
-    assert.equal(crowd.userData.mesh.geometry,crowd.userData.lod);
-    assert.notEqual(makeGait(3002).phase,seed.phase);
+const assetsDirectory = new URL('../game/assets/glb/', import.meta.url);
+function characterFile(name) {
+    const bytes = readFileSync(new URL(name + '.glb', assetsDirectory));
+    const jsonSize = bytes.readUInt32LE(12);
+    assert.equal(bytes.toString('ascii', 0, 4), 'glTF');
+    assert.equal(bytes.readUInt32LE(4), 2);
+    assert.equal(bytes.readUInt32LE(8), bytes.length);
+    assert.equal(bytes.toString('ascii', 16, 20), 'JSON');
+    assert.equal(bytes.toString('ascii', 24+jsonSize, 28+jsonSize), 'BIN\0');
+    const json = JSON.parse(bytes.toString('utf8', 20, 20+jsonSize));
+    const bin = bytes.subarray(28+jsonSize);
+    function accessor(index) {
+        const a = json.accessors[index], view = json.bufferViews[a.bufferView];
+        const components = {SCALAR:1, VEC3:3, VEC4:4}[a.type];
+        const [size, read] = {5121:[1,'readUInt8'], 5123:[2,'readUInt16LE'], 5126:[4,'readFloatLE']}[a.componentType];
+        const start = (view.byteOffset||0)+(a.byteOffset||0);
+        return Array.from({length:a.count}, (_,i)=>Array.from({length:components}, (_,j)=>
+            bin[read](start+i*(view.byteStride||size*components)+j*size)));
+    }
+    return {bytes, json, accessor};
+}
+
+test('packaged GLBs contain complete weighted characters, all clips and measured adult proportions', () => {
+    const clips = {
+        jax:['Idle','Walk','Run','Jump','Punch','PistolIdle','PistolAim','PistolShoot','Sitting'],
+        female:['Death','Defeat','Idle','Jump','PickUp','Punch','RecieveHit','Roll','Run','Run_Carry',
+            'Shoot_OneHanded','SitDown','StandUp','SwordSlash','Victory','Walk','Walk_Carry']
+    };
+    for (const name of Object.keys(clips)) {
+        const {json:g, accessor} = characterFile(name);
+        assert.deepEqual(g.animations.map(a=>a.name).sort(), clips[name].sort());
+        const bones = g.skins[0].joints;
+        assert.equal(bones.length, name==='jax'?65:23);
+        assert.ok(g.nodes.length>bones.length);
+        for (const anim of g.animations) {
+            const moving = anim.channels.filter(c=>bones.includes(c.target.node) && c.target.path==='rotation' &&
+                g.accessors[anim.samplers[c.sampler].output].count>2);
+            assert.ok(moving.length>=4, anim.name+' moves the skeleton');
+        }
+        let floor=Infinity, crown=-Infinity, chin=Infinity, triangles=0;
+        for (const node of g.nodes.filter(n=>n.skin!==undefined)) {
+            const joints=g.skins[node.skin].joints;
+            for (const primitive of g.meshes[node.mesh].primitives) {
+                const a=primitive.attributes;
+                const pos=accessor(a.POSITION), indices=accessor(a.JOINTS_0), weights=accessor(a.WEIGHTS_0);
+                triangles+=g.accessors[primitive.indices].count/3;
+                for (let i=0;i<pos.length;i++) {
+                    const w=weights[i], y=pos[i][1];
+                    const bone=g.nodes[joints[indices[i][w.indexOf(Math.max(...w))]]];
+                    assert.ok(bone && Math.abs(w.reduce((sum,k)=>sum+k,0)-1)<.002, 'normalised skin weights');
+                    floor=Math.min(floor,y); crown=Math.max(crown,y);
+                    // Chin to crown, excluding hair hanging below the chin.
+                    if (/Head$/.test(bone.name) && node.name!=='Hair') chin=Math.min(chin,y);
+                }
+            }
+        }
+        const height=crown-floor, fraction=(crown-chin)/height;
+        assert.ok(triangles>=1000 && triangles<=2500, name+' triangles '+triangles);
+        assert.ok(fraction>=1/8.5 && fraction<=1/6.5, name+' head fraction '+fraction);
+    }
 });
 
-test('standing player, civilians and officers share adult proportions at both detail levels', async () => {
-    const {buildPersonRig, poseRig} = await import('../game/src/rig.js');
-    const {makeGait, solvePose} = await import('../game/src/locomotion.js');
-    const {Vector3} = await import('../game/vendor/three.module.min.js');
-    for (const options of [{player:true}, {style:1}, {style:2}, {officer:true}]) {
-        const rig = buildPersonRig(options);
-        const {bones, mesh} = rig.userData;
-        const headIndex = mesh.skeleton.bones.indexOf(bones.head);
-        for (const distant of [false, true]) {
-            poseRig(rig, solvePose(makeGait()), distant);
-            rig.updateMatrixWorld(true);
-            let floor = Infinity, crown = -Infinity, chin = Infinity;
-            const vertex = new Vector3();
-            const {position, skinIndex} = mesh.geometry.attributes;
-            for (let i = 0; i < position.count; i++) {
-                mesh.getVertexPosition(i, vertex);
-                floor = Math.min(floor, vertex.y);
-                crown = Math.max(crown, vertex.y);
-                if (skinIndex.getX(i) === headIndex) chin = Math.min(chin, vertex.y);
-            }
-            const height = crown - floor;
-            const head = (crown - chin) / height;
-            const leg = (bones.thighL.matrixWorld.elements[13] - bones.ankleL.matrixWorld.elements[13]) / height;
-            assert.ok(Math.abs(floor) < .11 && Math.abs(height - 28) < .5, `floor ${floor}, height ${height}`);
-            assert.ok(head >= 1/8.5 && head <= 1/6.5, `head/height ${head}`);
-            assert.ok(leg >= .45 && leg <= .55, `leg/height ${leg}`);
-
-            // At full knee flexion the foot beside the car must still touch the road.
-            poseRig(rig, solvePose(makeGait(), {transition:{kind:'exit', time:.05}}), distant);
-            rig.updateMatrixWorld(true);
-            let crouchingFloor = Infinity;
-            for (let i = 0; i < position.count; i++) {
-                crouchingFloor = Math.min(crouchingFloor, mesh.getVertexPosition(i, vertex).y);
-            }
-            assert.ok(Math.abs(crouchingFloor) < .11, `door crouch floor ${crouchingFloor}`);
+test('skeleton clones share vertex buffers, hold independent clip clocks and ground the posed feet', async () => {
+    const {GLTFLoader}=await import('../game/vendor/GLTFLoader.js');
+    const {Vector3}=await import('../game/vendor/three.module.min.js');
+    const {prepareCharacter,createCharacter,poseCharacter,placeCharacter,disposeCharacter}=await import('../game/src/characters.js');
+    const {bytes}=characterFile('female');
+    const gltf=await new GLTFLoader().parseAsync(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset+bytes.length),'');
+    prepareCharacter('female',gltf);
+    const ped={id:2002,gait:{speed:34},x:5,y:7,h:.4}, a=createCharacter(ped), b=createCharacter(ped);
+    const one=a.userData,two=b.userData;
+    assert.notEqual(one.mesh,two.mesh);
+    assert.notEqual(one.mesh.skeleton.bones[2],two.mesh.skeleton.bones[2]);
+    assert.equal(one.mesh.geometry,two.mesh.geometry);
+    const imagePose=two.mesh.skeleton.bones.map(b=>b.quaternion.toArray());
+    for (let i=0;i<36;i++) poseCharacter(a,ped,1/60);
+    assert.equal(one.state,'Walk'); assert.equal(two.mixer.time,0);
+    assert.deepEqual(two.mesh.skeleton.bones.map(b=>b.quaternion.toArray()),imagePose);
+    assert.notDeepEqual(one.mesh.skeleton.bones.map(b=>b.quaternion.toArray()),imagePose);
+    for (const state of [{}, {transition:{kind:'exit',time:.1}}, {z:14}]) {
+        const actor={...ped,...state};
+        for(let i=0;i<12;i++) poseCharacter(a,actor,1/60);
+        placeCharacter(a,actor); a.updateMatrixWorld(true);
+        const v=new Vector3(); let floor=Infinity;
+        for(let i=0;i<one.mesh.geometry.attributes.position.count;i++) {
+            one.mesh.getVertexPosition(i,v).applyMatrix4(one.mesh.matrixWorld);
+            floor=Math.min(floor,v.y);
         }
+        assert.ok(Math.abs(floor-(actor.z||0))<.5, 'shoe contact '+floor);
     }
+    disposeCharacter(a); disposeCharacter(b);
+});
+
+test('pedestrian palettes are unique within each rig across the initial city population', async () => {
+    const {civilianLook}=await import('../game/src/pedestrians.js');
+    const outfits=new Set();
+    for(let id=2000;id<2064;id++){
+        const {jacket,skin,trousers}=civilianLook(id);
+        const key=[id%2,jacket,skin,trousers].join('/');
+        assert.ok(!outfits.has(key),'duplicate outfit at '+id);
+        outfits.add(key);
+    }
+});
+
+test('the offline character payload fits its individual and combined file budgets', () => {
+    const files=readdirSync(assetsDirectory).filter(n=>n.endsWith('.glb')).sort();
+    assert.deepEqual(files,['female.glb','jax.glb']);
+    let total=0;
+    for(const file of files){
+        const data=readFileSync(new URL(file,assetsDirectory));
+        assert.ok(data.length>0 && data.length<=2_000_000,file);
+        const bytesPath=new URL(file.replace('.glb','.bytes.js'), assetsDirectory);
+        const module=readFileSync(bytesPath,'utf8');
+        const encoded=JSON.parse(module.slice(module.indexOf('export default ')+15).trim().replace(/;$/,''));
+        assert.deepEqual(gunzipSync(Buffer.from(encoded,'base64')),data);
+        total+=data.length;
+    }
+    assert.ok(total<3_000_000);
 });
 
 test('all six wheel sets sit on the road and roll by their configured circumference', async () => {
@@ -1133,4 +1191,17 @@ test('seeded streets have varied parking, curb puddles and distinct neighboring 
         assert.equal(new Set(row.map(c=>c.color)).size,4);
         assert.ok(new Set(row.map(c=>c.type)).size>=3);
     }
+});
+
+test('rounded boxes share geometry only for matching dimensions, segments and radius', async () => {
+    const {getRoundedBoxGeometry: box} = await import('../game/vendor/RoundedBoxGeometry.js');
+    const a = box(3, 4, 5, 1, .4);
+    assert.equal(box(3, 4, 5, 1, .4), a);
+    for (const args of [[2,4,5,1,.4], [3,2,5,1,.4], [3,4,2,1,.4], [3,4,5,2,.4], [3,4,5,1,.6]]) {
+        assert.notEqual(box(...args), a);
+    }
+    const plain = box(3, 4, 5, 0, 0);
+    plain.computeBoundingBox();
+    assert.equal(plain.boundingBox.max.y, 2);
+    assert.equal(plain, box(3, 4, 5, 0, 0));
 });

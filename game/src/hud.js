@@ -55,10 +55,22 @@ export function makeMap(world) {
 
 function paintDots(ctx, game, ox, oy, scale) {
     const dot = (x, y, r, color) => ellipse(ctx, ox + x * scale, oy + y * scale, r, r, color);
+    // Paint consecutive dots of the same style in one canvas operation.
+    // Their positions and stacking order still come from the traffic list.
+    let paint=null;
     for (const car of game.cars) {
         if (car.wreck) continue;
-        dot(car.x,car.y,car.type==='police'?2.8:1.3,car.type==='police'?P.policeRed:'#d2cbce');
+        const police=car.type==='police', color=police?P.policeRed:'#d2cbce', r=police?2.8:1.3;
+        if (paint!==color) {
+            if (paint) ctx.fill();
+            ctx.beginPath();
+            ctx.fillStyle=paint=color;
+        }
+        const cx=ox+car.x*scale, cy=oy+car.y*scale;
+        ctx.moveTo(cx+r,cy);
+        ctx.ellipse(cx,cy,r,r,0,0,Math.PI*2);
     }
+    if (paint) ctx.fill();
     for (const officer of game.police.officers) {
         if (!officer.dead) dot(officer.x, officer.y, 2, P.policeRed);
     }

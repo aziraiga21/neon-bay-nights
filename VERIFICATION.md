@@ -7,7 +7,7 @@
 | Rosa’s story | Five ordered jobs with briefings, objective markers, rewards, failure, retry and completion dialogue. First Delivery has a 90-second hotel deadline. Hot Wheels requires an actual two-star escape. Repo Man requires the specific magenta Mirage. Diner Defense tracks four Copper Kings. The Big Score requires stealing the armoured van, escaping three stars and delivering it intact. Rosa’s after-hours diner visit persists after the finale. |
 | City | Seeded 49-junction road network across Glasswater, Coral Mile and Marlin Wharf, Ocean Drive, beach, pier, parks, solid buildings and containers, district signs, four accessible services, line-of-sight checks and pathfinding. |
 | Driving | Six vehicle classes, parked cars, 50 grid traffic cars, waterfront traffic and patrols. Lane following, signals, avoidance, distant traffic recycling, theft and escaping drivers, acceleration, reversing, grip, handbrake, skid marks, impacts, damage, wrecks and smoke. |
-| People | 64 starting walkers, seeded outfits, sidewalk routes, pauses, crossings, fleeing, casualties and cab passengers. Four roaming rivals plus story actors. |
+| People | 64 starting pedestrians with rigged Mixamo and Quaternius GLB characters, seeded outfits, sidewalk routes, pauses, crossings, fleeing, casualties and cab passengers. Four roaming rivals plus story actors. |
 | Police | Witnessed and reported crimes, heat thresholds for zero to five stars, recognition by car, sight loss and heat decay, foot dispatch, bounded cruisers, pursuit routing, officer deployment and retirement, bust meter, escape and clinic recovery. |
 | Combat and economy | Pistol, fists, hostile fire, damage protection, defeat, cash drops, reputation, health and ammo pickups. Food, clinic, ammunition, garage repairs and repaint. Buy and retrieve titled cars at Marlowe. |
 | Side activities | Timed cab calls, a physical waiting passenger, boarding, drop-off, payout and cancellation. Ten persistent Neon Tapes, each paying $75 and 50 reputation once. |
@@ -15,51 +15,45 @@
 | Screens and storage | New game, Continue, pause, jobs, garage, defeat, retry, recovery and ending. Version-one local saves, legacy defaults, autosave, denied-storage handling and capture-mode isolation. |
 | Distribution | Static offline browser modules, vendored Three.js r160, fixed simulation ticks, four seeded live capture scenarios, local server and deterministic make.fun packaging. |
 
-## Resume from 6b5b460, 20 November 2026
+## Visual polish baseline at f65d7be
 
-Jax, the pedestrians, rivals and officers share a 14-unit hip-to-ankle chain (7.5 thigh, 6.5 shin). Jax stands 27.98 units high with a 3.76-unit chin-to-crown height. The neck follows the chest. The hair, face, sunglasses and officer cap follow the head. The stance solver uses the same leg lengths as the skinned model and accounts for knee flexion during landing and at the car door.
+On 20 November 2026 the polish pass shipped the dusk reflection map, revised car silhouettes and wheels, recessed storefronts, balconies, setbacks, signals, puddles and seeded street clutter. The core suite passed all 40 tests. Two seed-1706 runs produced identical 7,200-tick dumps. The Chromium smoke run exercised the four gears, jump, aim, fire, vehicle transitions and First Delivery.
 
-The proportions test measures posed mesh vertices and joint positions at both detail levels for Jax, two civilian hairstyles and a uniformed officer. It checks standing height, shoe contact, head and leg fractions, and shoe contact during the door crouch. A 32-phase sample of the walk put the lowest shoe between −0.12 and +0.12 world units from the road.
+At 1280 × 800 with a 320 × 200 SwiftShader buffer, the synchronized 12-frame sample in `out/verify/polish-profile.log` measured 288.35 ms for the original scene (36 draws, 73,377 triangles) and 153.65 ms with the basic material. The target is 40 ms.
 
-### Software-renderer measurements
+| Polish capture, seed 1706 | JPEG bytes | Draws | Triangles |
+| --- | ---: | ---: | ---: |
+| [Ocean Drive](screenshots/1-cover.jpg) | 172,552 | 40 | 44,740 |
+| [Hot Wheels](screenshots/2-chase.jpg) | 196,397 | 52 | 78,067 |
+| [Repo Man](screenshots/3-mission.jpg) | 182,464 | 83 | 119,156 |
+| [Glasswater](screenshots/4-city.jpg) | 203,560 | 57 | 96,901 |
 
-Headless Chromium, ANGLE SwiftShader, seed 1706, 1280 × 800 CSS viewport, 320 × 200 WebGL buffer. The six modes in the local `out/verify/profile.mjs` are cumulative diagnostic changes on a fixed simulation tick. Each cell is a median frame interval in milliseconds. The harness reads one pixel per frame to wait for GPU completion, discards six warm-up frames, and measures twelve. Disabling individual effects below was confined to the profiler.
+## Rigged-character recording 01a1f8c3-a26e-7cb1-b895-c77173331aa9
 
-| Profiler mode | Before renderer changes | Fitted and cached shadows | Indexed meshes, projected detail and sky depth | Palm batching and masonry culling |
-| --- | ---: | ---: | ---: | ---: |
-| Original scene | 601.6 | 393.4 | 379.5 | 349.6 |
-| Cache shadow map | 411.9 | 393.6 | 351.4 | 309.0 |
-| Disable glows and beams | 405.5 | 398.6 | 349.2 | 413.0 |
-| Shorten far plane | 330.2 | 323.6 | 282.7 | 301.7 |
-| Isolate static geometry and player | 300.5 | 283.4 | 270.8 | 288.2 |
-| Override with basic material | 135.3 | 138.7 | 106.6 | 104.9 |
+The published three@0.160.0 npm tarball downloaded in this session has SHA-256 `1ee2f935c4f555814b388e87b5ef78a44856bd2e9d0feb88643a6e193fb42856`. Reapplying the existing canvas creation, two lighting diagnostic messages and network-loader adaptations to its minified build reproduced the checked-in engine byte for byte (SHA-256 `80caf61f7bb77652c1f616fd81506e25be12bc1a59f556ed752818de413b7104`). The bundled copy adds the dated provenance comment.
 
-The unmodified profiler initially reported 15.3 ms for the full scene and 452.6 ms with shadow updates disabled. Queued frames made those timings unsuitable for estimating completed-frame throughput. The synchronized full-scene run reduced draw calls from 118 to 89, triangles from 143,576 to 88,870, and the median interval by 42%. It still exceeded the 40 ms budget for 25 fps. Small differences between runs include scheduler and compositor variance.
+Finish recording `01a1f9da-c61e-7c13-8531-340a3cb2be8e` measured the two GLBs in `game/assets/glb/`. Both ship with local `.bytes.js` loaders.
 
-The sun follows the player. Native-resolution captures use a 2048² shadow map, and gameplay sizes the map to the drawing buffer. Repeated paints of the same scene reuse the map. Static batches retain mesh indices and UV seams. Palms share draw calls by projected size and shadow visibility. The renderer uses building bounds for culling and paints the sky behind opaque surfaces. The simulation continues to update the entire city.
+| Asset | GLB bytes | Skinned triangles | Head / height | Animation clips |
+| --- | ---: | ---: | ---: | --- |
+| Mixamo Jax | 841,272 | 2,479 | 0.150492 (1/6.645) | Idle, Walk, Run, Jump, Punch, PistolIdle, PistolAim, PistolShoot, Sitting |
+| Quaternius female | 529,324 | 2,315 | 0.130522 (1/7.662) | Walk_Carry, Walk, Victory, SwordSlash, StandUp, SitDown, Shoot_OneHanded, Run_Carry, Run, Roll, RecieveHit, Punch, PickUp, Jump, Idle, Defeat, Death |
 
-### Offline provenance
+The proportion check reads vertex positions and skin weights from the GLB accessors. It measures crown to lowest head-dominated vertex (excluding hanging hair for the chin) divided by crown to floor. Uniform character scaling preserves this fraction. Both meshes fall within the specified 1/8.5–1/6.5 band. Clip names above preserve the source spelling.
 
-All four Three.js vendor files were regenerated from the official three@0.160.0 release archive and byte-compared to the existing offline copies. The MIT license is verbatim. The addons import the local module. The existing core adaptations use HTML canvas creation, omit external diagnostic links and disable network loaders. All models, clothing, facades, signs and street surfaces use the game's procedural geometry and textures.
+All four seed-1706 JPEGs were recaptured from the final assets with `out/verify/browser.mjs`, copied into `screenshots/` and visually inspected. The original rigged cover was byte-identical to the polish cover. All four final files differ from f65d7be.
 
-### Gameplay and determinism
+| Capture | JPEG bytes | Draws | Triangles | Visual inspection |
+| --- | ---: | ---: | ---: | --- |
+| [Ocean Drive](screenshots/1-cover.jpg) | 172,548 | 39 | 42,520 | Rear chase framing, beach, wheel and sunset intact. |
+| [Hot Wheels](screenshots/2-chase.jpg) | 196,650 | 53 | 75,411 | Sidewalk figures have distinct outfits. Pursuit, lights and job HUD are visible. |
+| [Repo Man](screenshots/3-mission.jpg) | 183,374 | 83 | 112,242 | Jax has a readable running stride, bent elbows and visible shoes beside the marked Mirage. |
+| [Glasswater](screenshots/4-city.jpg) | 204,490 | 57 | 86,420 | Jax crosses the intersection with distinct pedestrians behind the taxi and on the sidewalk. |
 
-- All 22 production JS modules, the core suite and the local profile script passed `node --check`.
-- `node --test tests/core.test.mjs` passed. Running with `--test-isolation=none` on this Node 24 host listed all 38 tests individually, with 38 passes and zero failures or skips.
-- Two separate processes advanced seed 1706 for 7,200 fixed ticks each, including driving, exiting, jumping and police dispatch. The 90,295-byte state dumps were identical. Both SHA-256 digests were `5720db1ebb67b4f0ac079ddbc7e65d66a91773c49e42dec9d8ec6c9747f281ae`.
-- The byte scan of every file under `game/` found zero literal HTTP URLs, HTTPS URLs, fetch calls or XMLHttpRequest references.
-- The Chromium smoke run used real keyboard, mouse and menu events to enter, drive and exit the Mirage, walk, jog, pass through run into sprint, jump and land, hold aim, fire once and start First Delivery. Space preserved ammunition. External requests, HTTP errors, browser console errors and page exceptions all remained at zero.
-- The live smoke run measured a 343.7 ms median and a 348.5 ms mean across its final 60 frame intervals, typically 2.9 fps on this VM's SwiftShader. The adaptive WebGL buffer reached 256 × 160 with the HUD at 1280 × 800. The last frame submitted 41 draw calls and 50,670 triangles.
+No visible T-pose, missing limb or foot-grounding defect appeared in the final captures.
 
-### Full-resolution captures
+The complete rigged SwiftShader profile in `out/verify/rig-submission-profile.log` measured 370.35 ms original and 160.90 ms basic, above the polish medians of 288.35 and 153.65 ms. This finish recording ran `out/verify/profile.mjs` again. It recorded 206.40 ms original (35 draws, 49,992 triangles) and 202.60 ms in cache mode before termination with status 143. This run has no basic-material measurement. The 40 ms target remains unmet.
 
-Each scenario ran from `shots.json` at seed 1706. The capture waited for the two final paints and saved a 1280 × 800 JPEG. Each reviewed file in `out/verify/` was copied byte-for-byte into the packaged `screenshots/` directory.
+The final syntax check passed for all 19 changed or added JavaScript modules, including the test module. `node --test tests/core.test.mjs` exited successfully. Running the file directly reported 43 passed, zero failed and zero skipped. Two independent runs of seed 1706 through 7,200 ticks produced byte-identical dumps with SHA-256 `c4bb07e576317974104165027ecece52908b66a8dcbe9d731df7d9af571ba6c1`. A binary-inclusive search of the entire `game/` tree found zero occurrences of the four forbidden network patterns.
 
-| Capture | Local verification path | Packaged image | Bytes | Visual check |
-| --- | --- | --- | ---: | --- |
-| Cover | `out/verify/1-cover.jpg` | [Ocean Drive](screenshots/1-cover.jpg) | 166,628 | Rounded magenta Mirage, reflective paint, bay, sailboats and pier wheel under a pink sky. |
-| Chase | `out/verify/2-chase.jpg` | [Hot Wheels](screenshots/2-chase.jpg) | 189,042 | Mirage in front of two marked cruisers, flashing bars, three wanted stars and distinct palm shadows across the road. |
-| Mission | `out/verify/3-mission.jpg` | [Repo Man](screenshots/3-mission.jpg) | 193,368 | Jax in stride beside the target car. Head, shoulders and both legs are visible against the street. |
-| City | `out/verify/4-city.jpg` | [Glasswater](screenshots/4-city.jpg) | 205,447 | Three-quarter rear view shows the bent trailing leg, raised heel and long cast shadow. Pedestrians and a crossing Bay Cab frame the intersection. |
-
-The procedural Three.js assets are the shipped path. The optional Blender generation pass was deferred while the software-renderer frame budget remains open.
+Against f65d7be, the four required authorship paths all have content changes. The verification record adds the polish and rig measurements. The remaining three entries in the authorship diff stat are `game/vendor/RoundedBoxGeometry.js` (34 changed lines), `game/vendor/THREE-LICENSE.txt` (21) and `game/vendor/three.module.min.js` (1).

@@ -1,5 +1,6 @@
 import {
 	BoxGeometry,
+	BufferAttribute,
 	Vector3
 } from './three.module.min.js';
 
@@ -152,4 +153,35 @@ class RoundedBoxGeometry extends BoxGeometry {
 
 }
 
-export { RoundedBoxGeometry };
+// Shared local-space templates. A caller baking a part into a district mesh
+// clones the template before applying its world transform.
+const templates = new Map();
+
+function getRoundedBoxGeometry( width = 1, height = 1, depth = 1, segments = 2, radius = 0.1 ) {
+	const key = [width, height, depth, segments, radius].join('/');
+	if ( templates.has(key) ) return templates.get(key);
+	let shape;
+	if ( segments === 0 || radius === 0 ) {
+		shape = new BoxGeometry(width, height, depth);
+	} else {
+		shape = new RoundedBoxGeometry(width, height, depth, segments, radius);
+		shape.userData.roundedBox = true;
+		// Restore the original per-face grid indices after r160 expands the box.
+		// Face boundaries retain their normals and UV seams.
+		const divisions = 2 * segments + 1;
+		const grid = new BoxGeometry(1, 1, 1, divisions, divisions, divisions);
+		for ( const [name, attr] of Object.entries(shape.attributes) ) {
+			const packed = new Float32Array(grid.attributes.position.count * attr.itemSize);
+			for ( let i = 0; i < attr.count; i++ ) {
+				const offset = grid.index.array[i] * attr.itemSize;
+				for ( let k = 0; k < attr.itemSize; k++ ) packed[offset + k] = attr.array[i * attr.itemSize + k];
+			}
+			shape.setAttribute(name, new BufferAttribute(packed, attr.itemSize));
+		}
+		shape.setIndex(grid.index);
+	}
+	templates.set(key, shape);
+	return shape;
+}
+
+export { RoundedBoxGeometry, getRoundedBoxGeometry };
